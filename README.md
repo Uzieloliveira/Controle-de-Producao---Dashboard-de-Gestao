@@ -1,8 +1,22 @@
-# Controle de Produção
+# 🏭 Controle de Produção
 
 Aplicação web para acompanhar produção e peças restantes, comparar resultados por período, cadastrar metas por seção e administrar usuários e gestores. A interface é feita com React e Vite; a API é feita com Python e FastAPI. O armazenamento principal pode ser o Cloud Firestore; há também um modo SQLite para desenvolvimento local.
 
-## Funcionalidades
+## 📚 Índice
+
+- [✨ Funcionalidades](#funcionalidades)
+- [🧰 Tecnologias e requisitos](#tecnologias-e-requisitos)
+- [📦 Instalação local](#instalação-local)
+- [☁️ Configuração do Firestore](#configuração-do-firestore)
+- [▶️ Executar o sistema](#executar-o-sistema)
+- [🌐 Configuração fora do desenvolvimento local](#configuração-fora-do-desenvolvimento-local)
+- [👥 Funcionalidades por perfil](#funcionalidades-por-perfil)
+- [🗃️ Banco de dados e estrutura](#banco-de-dados-e-estrutura)
+- [🔌 Endpoints principais](#endpoints-principais)
+- [🧪 Testes](#testes)
+- [🗂️ Estrutura principal](#estrutura-principal)
+
+## ✨ Funcionalidades
 
 - Cadastro e login com RE numérico (até 5 dígitos) e senha.
 - Visão geral com filtro por dia ou mês, totais produzidos por seção, comparação de produção por operador e metas.
@@ -16,7 +30,7 @@ Aplicação web para acompanhar produção e peças restantes, comparar resultad
 
 Os registros de produção e peças restantes são somente leitura nesta API e são alimentados pelo aplicativo que os coleta (por exemplo, o aplicativo mobile). O painel web não cria nem edita esses registros.
 
-## Tecnologias e requisitos
+## 🧰 Tecnologias e requisitos
 
 - Windows 10/11 (os comandos abaixo são para PowerShell).
 - Node.js 18 ou superior e npm.
@@ -32,7 +46,7 @@ Downloads oficiais:
 
 O Google Cloud CLI é necessário somente para o fluxo `gcloud auth application-default login`. Não é necessário instalar o Firebase CLI para executar esta aplicação.
 
-## Instalação local
+## 📦 Instalação local
 
 Abra o PowerShell na pasta do projeto e instale as dependências:
 
@@ -53,7 +67,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 Também é possível executar o Python do ambiente sem ativá-lo, usando `.\.venv\Scripts\python.exe` nos comandos abaixo.
 
-## Configuração do Firestore
+## ☁️ Configuração do Firestore
 
 O backend acessa o **Cloud Firestore pelo SDK Python `google-cloud-firestore`**. Não usa o Firebase Authentication: cadastro, validação de senha e sessão são feitos pela API deste sistema. No console do Google Cloud ou Firebase:
 
@@ -62,7 +76,7 @@ O backend acessa o **Cloud Firestore pelo SDK Python `google-cloud-firestore`**.
 3. Crie um banco de dados Firestore no modo nativo.
 4. Configure uma identidade de execução com permissão para ler e gravar no Firestore (por exemplo, o papel **Cloud Datastore User**, `roles/datastore.user`). Para desenvolvimento, pode usar ADC de usuário; para implantação, prefira uma conta de serviço com privilégio mínimo e mantenha a chave fora da pasta do projeto.
 
-### Autenticação de desenvolvimento com ADC
+### 🔐 Autenticação de desenvolvimento com ADC
 
 Instale o Google Cloud CLI e execute no PowerShell:
 
@@ -75,7 +89,7 @@ Substitua `SEU_PROJECT_ID` pelo ID real do seu projeto. A identidade autenticada
 
 Como alternativa, defina `GOOGLE_APPLICATION_CREDENTIALS` apontando para o arquivo JSON de uma conta de serviço. Guarde esse arquivo fora do repositório e não o compartilhe. Este repositório ignora arquivos com nomes comuns de chave de serviço no `.gitignore`; se uma chave já tiver sido publicada ou compartilhada, revogue-a no Google Cloud e gere outra.
 
-### Arquivo `.env`
+### ⚙️ Arquivo `.env`
 
 Crie ou edite `.env` na raiz do projeto. Este arquivo não deve ser versionado nem compartilhado:
 
@@ -122,7 +136,7 @@ O usuário administrador deve se cadastrar com o RE configurado em `ADMIN_RE` e 
 
 `ADMIN_RE` é o RE administrador reconhecido pelo backend. `DASHBOARD_MANAGER_RES` é opcional e concede acesso de gestor aos REs listados; gestores também podem ser concedidos pelo painel administrativo. O administrador principal não pode ser bloqueado nem ter o cadastro alterado pelo painel.
 
-### Alternar para SQLite
+### 🗃️ Alternar para SQLite
 
 Para desenvolvimento sem Firestore, configure:
 
@@ -132,7 +146,7 @@ FIRESTORE_ENABLED=false
 
 O backend cria e inicializa automaticamente `backend\controle_producao.db`. Esse banco SQLite local não é sincronizado com o Firestore. Não altere o valor de `FIRESTORE_ENABLED` esperando que os dados sejam migrados entre os bancos.
 
-## Executar o sistema
+## ▶️ Executar o sistema
 
 Com `.env` configurado, abra dois terminais na raiz do projeto.
 
@@ -151,7 +165,7 @@ npm run dev
 
 Abra [http://localhost:5173](http://localhost:5173). O Vite encaminha as chamadas `/api` para `http://127.0.0.1:8000`; portanto, mantenha ambos os processos em execução. Para verificar o backend, acesse [http://127.0.0.1:8000/api/health](http://127.0.0.1:8000/api/health). A documentação interativa da API fica em [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 
-## Configuração fora do desenvolvimento local
+## 🌐 Configuração fora do desenvolvimento local
 
 Se a API estiver hospedada em outro endereço, defina `VITE_API_URL` antes de iniciar ou compilar o frontend. O valor deve incluir o prefixo da API, por exemplo:
 
@@ -168,7 +182,7 @@ Configure `FRONTEND_ORIGINS` no backend com a origem exata do site, como `https:
 - Publique o resultado de `npm run build` (`dist`) em um servidor estático e configure HTTPS e o encaminhamento para a API.
 - Não exponha a chave JSON da conta de serviço, nem permita acesso irrestrito ao Firestore pelo navegador.
 
-## Funcionalidades por perfil
+## 👥 Funcionalidades por perfil
 
 | Perfil | Acesso |
 | --- | --- |
@@ -178,7 +192,7 @@ Configure `FRONTEND_ORIGINS` no backend com a origem exata do site, como `https:
 
 O token de sessão é assinado pelo backend e expira após 12 horas. As senhas dos usuários são armazenadas com scrypt, nunca em texto puro. O hash configurado em `ADMIN_PASSWORD_HASH` é a credencial inicial usada para o administrador.
 
-## Banco de dados e estrutura
+## 🗃️ Banco de dados e estrutura
 
 Com Firestore ativado, o backend usa as seguintes coleções. Elas são criadas pelo Firestore quando os documentos são gravados; os dados de produção e peças podem ser inseridos pelo aplicativo mobile que os coleta.
 
@@ -195,7 +209,7 @@ O backend interpreta os campos de produção e peças restantes como registros d
 
 Com Firestore desativado, o SQLite cria as tabelas equivalentes `users`, `accounts`, `gestores`, `producoes`, `pecas_restantes` e `metas_producao` em `backend\controle_producao.db`.
 
-## Endpoints principais
+## 🔌 Endpoints principais
 
 Entre as rotas de negócio abaixo, todas exceto health check, login e cadastro exigem autenticação Bearer. As rotas administrativas exigem administrador e as rotas operacionais exigem gestor ou administrador.
 
@@ -217,7 +231,7 @@ Entre as rotas de negócio abaixo, todas exceto health check, login e cadastro e
 | `GET` | `/api/gestores/operadores` | Lista usuários do escopo do gestor. |
 | `PUT` | `/api/gestores/operadores/{RE}/bloquear` | Bloqueia operador do departamento do gestor. |
 
-## Testes
+## 🧪 Testes
 
 Na raiz do projeto:
 
@@ -232,7 +246,7 @@ Para gerar o bundle de produção do frontend:
 npm run build
 ```
 
-## Estrutura principal
+## 🗂️ Estrutura principal
 
 ```text
 src\
@@ -250,5 +264,3 @@ backend\
 icon\
   weg.svg                  Logotipo usado pela interface
 ```
-#   C o n t r o l e - d e - P r o d u c a o - - - D a s h b o a r d - d e - G e s t - o  
- 
