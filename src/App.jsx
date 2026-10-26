@@ -130,6 +130,7 @@ function MetricCard({ label, value, caption, icon, accent }) {
 function Dashboard({ token, user, onLogout }) {
   const [dashboard, setDashboard] = useState(null);
   const [activeTab, setActiveTab] = useState("producoes");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [goal, setGoal] = useState({ secao: "", quantidade: "" });
   const [managerRE, setManagerRE] = useState("");
   const [managers, setManagers] = useState([]);
@@ -417,21 +418,31 @@ function Dashboard({ token, user, onLogout }) {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <a className="brand-lockup sidebar-brand" href="#inicio"><img className="brand-logo brand-logo-on-blue" src={wegLogo} alt="WEG" /><span className="brand-name">Produção</span></a>
-        <div className="sidebar-caption">MENU PRINCIPAL</div>
-        <button className={`nav-link ${activeTab === "producoes" ? "active" : ""}`} onClick={() => setActiveTab("producoes")}><span>▦</span> Visão geral</button>
-        <button className={`nav-link ${activeTab === "pecas" ? "active" : ""}`} onClick={() => setActiveTab("pecas")}><span>▧</span> Peças restantes</button>
-        {user.perfil !== "usuario" && <button className={`nav-link ${activeTab === "metas" ? "active" : ""}`} onClick={() => setActiveTab("metas")}><span>◎</span> Metas por seção</button>}
-        {user.perfil !== "usuario" && <button className={`nav-link ${activeTab === "operadores" ? "active" : ""}`} onClick={() => setActiveTab("operadores")}><span>♙</span> Usuários registrados</button>}
-        {isAdministrator && <button className={`nav-link ${activeTab === "usuarios" ? "active" : ""}`} onClick={() => setActiveTab("usuarios")}><span>⚙</span> Administrar usuários</button>}
-        {isAdministrator && <button className={`nav-link ${activeTab === "admin" ? "active" : ""}`} onClick={() => setActiveTab("admin")}><span>♙</span> Administrar gestores</button>}
+      <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
+        <div className="sidebar-header">
+          <a className="brand-lockup sidebar-brand" href="#inicio"><img className="brand-logo brand-logo-on-blue" src={wegLogo} alt="WEG" />{!sidebarCollapsed && <span className="brand-name">Produção</span>}</a>
+          <button type="button" className="sidebar-toggle" title={sidebarCollapsed ? "Expandir menu" : "Recolher menu"} aria-label={sidebarCollapsed ? "Expandir menu" : "Recolher menu"} onClick={() => setSidebarCollapsed((current) => !current)}>
+            <span aria-hidden="true">{sidebarCollapsed ? "›" : "‹"}</span>
+          </button>
+        </div>
+        {!sidebarCollapsed && <div className="sidebar-caption">MENU PRINCIPAL</div>}
+        <button className={`nav-link ${activeTab === "producoes" ? "active" : ""}`} onClick={() => setActiveTab("producoes")}><span className="nav-link-icon">▦</span>{!sidebarCollapsed && <span className="nav-link-label">Visão geral</span>}</button>
+        <button className={`nav-link ${activeTab === "pecas" ? "active" : ""}`} onClick={() => setActiveTab("pecas")}><span className="nav-link-icon">▧</span>{!sidebarCollapsed && <span className="nav-link-label">Peças restantes</span>}</button>
+        {user.perfil !== "usuario" && <button className={`nav-link ${activeTab === "metas" ? "active" : ""}`} onClick={() => setActiveTab("metas")}><span className="nav-link-icon">◎</span>{!sidebarCollapsed && <span className="nav-link-label">Metas por seção</span>}</button>}
+        {user.perfil !== "usuario" && <button className={`nav-link ${activeTab === "operadores" ? "active" : ""}`} onClick={() => setActiveTab("operadores")}><span className="nav-link-icon">♙</span>{!sidebarCollapsed && <span className="nav-link-label">Usuários registrados</span>}</button>}
+        {isAdministrator && <button className={`nav-link ${activeTab === "usuarios" ? "active" : ""}`} onClick={() => setActiveTab("usuarios")}><span className="nav-link-icon">⚙</span>{!sidebarCollapsed && <span className="nav-link-label">Administrar usuários</span>}</button>}
+        {isAdministrator && <button className={`nav-link ${activeTab === "admin" ? "active" : ""}`} onClick={() => setActiveTab("admin")}><span className="nav-link-icon">♙</span>{!sidebarCollapsed && <span className="nav-link-label">Administrar gestores</span>}</button>}
         <div className="sidebar-bottom">
-          <div className="sidebar-status"><span className="status-dot" /> Sistema operacional</div>
-          <div className="profile-card">
+          {!sidebarCollapsed && <div className="sidebar-status"><span className="status-dot" /> Sistema operacional</div>}
+          <div className={`profile-card ${sidebarCollapsed ? "collapsed" : ""}`}>
             <div className="avatar">{user.nome?.trim().charAt(0).toUpperCase() || "U"}</div>
-            <div className="profile-info"><strong>{user.nome}</strong><small>RE {user.RE}</small><small>{user.departamento || "Departamento não informado"}</small></div>
-            <button className="logout-button" title="Sair da conta" onClick={onLogout} aria-label="Sair da conta">↗</button>
+            {!sidebarCollapsed && (
+              <>
+                <div className="profile-info"><strong>{user.nome}</strong><small>RE {user.RE}</small><small>{user.departamento || "Departamento não informado"}</small></div>
+                <button className="logout-button" title="Sair da conta" onClick={onLogout} aria-label="Sair da conta">↗</button>
+              </>
+            )}
+            {sidebarCollapsed && <button className="logout-button compact" title="Sair da conta" onClick={onLogout} aria-label="Sair da conta">↗</button>}
           </div>
         </div>
       </aside>
