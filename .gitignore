@@ -1,0 +1,9 @@
+node_modules/
+dist/
+__pycache__/
+*.py[cod]
+.venv/
+.env
+backend/controle_producao.db
+*-firebase-adminsdk-*.json
+*service-account*.json
