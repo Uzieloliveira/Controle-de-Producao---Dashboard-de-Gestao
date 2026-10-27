@@ -82,6 +82,11 @@ class Storage:
                 CREATE TABLE IF NOT EXISTS gestores (
                     re TEXT PRIMARY KEY REFERENCES users(re)
                 );
+                CREATE TABLE IF NOT EXISTS active_sessions (
+                    re TEXT PRIMARY KEY,
+                    token TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
             user_columns = {
@@ -227,6 +232,58 @@ class Storage:
                     """,
                     (employee_re, password_hash),
                 )
+
+    def register_active_session(self, employee_re: str, token: str) -> None:
+        if self.use_firestore:
+            document = self.firestore.collection("active_sessions").document(employee_re)
+            current = document.get()
+            existing_token = str((current.to_dict() or {}).get("token") or "") or None
+            if existing_token is not None and existing_token != token:
+                raise ValueError("Este usuário já está logado em outra sessão.")
+            document.set({
+                "re": employee_re,
+                "token": token,
+            })
+            return
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT token FROM active_sessions WHERE re = ?",
+                (employee_re,),
+            ).fetchone()
+            if row is not None and row["token"] != token:
+                raise ValueError("Este usuário já está logado em outra sessão.")
+            connection.execute(
+                """
+                INSERT INTO active_sessions (re, token)
+                VALUES (?, ?)
+                ON CONFLICT(re)
+                DO UPDATE SET token = excluded.token, created_at = CURRENT_TIMESTAMP
+                """,
+                (employee_re, token),
+            )
+
+    def clear_active_session(self, employee_re: str) -> None:
+        if self.use_firestore:
+            self.firestore.collection("active_sessions").document(employee_re).delete()
+            return
+        with self._connection() as connection:
+            connection.execute("DELETE FROM active_sessions WHERE re = ?", (employee_re,))
+
+    def get_active_session_token(self, employee_re: str) -> str | None:
+        if self.use_firestore:
+            snapshot = self.firestore.collection("active_sessions").document(employee_re).get()
+            if not snapshot.exists:
+                return None
+            return str((snapshot.to_dict() or {}).get("token") or "") or None
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT token FROM active_sessions WHERE re = ?", (employee_re,)
+            ).fetchone()
+        return row["token"] if row is not None else None
+
+    def is_active_session(self, employee_re: str, token: str) -> bool:
+        return self.get_active_session_token(employee_re) == token
 
     def is_manager(self, employee_re: str) -> bool:
         if self.use_firestore:

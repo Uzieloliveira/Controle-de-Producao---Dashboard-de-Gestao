@@ -31,6 +31,17 @@ function AuthScreen({ onAuthenticated }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  function formatAuthError(message) {
+    const normalized = String(message || "").trim();
+    if (normalized.includes("já está logado em outra sessão")) {
+      return "Este usuário já está conectado em outra sessão. Feche a sessão ativa e tente novamente.";
+    }
+    if (normalized.includes("RE ou senha incorretos")) {
+      return "RE ou senha incorretos.";
+    }
+    return normalized || "Não foi possível concluir a autenticação.";
+  }
+
   async function submit(event) {
     event.preventDefault();
     setError("");
@@ -42,7 +53,7 @@ function AuthScreen({ onAuthenticated }) {
       });
       onAuthenticated(result);
     } catch (requestError) {
-      setError(requestError.message);
+      setError(formatAuthError(requestError.message));
     } finally {
       setLoading(false);
     }
@@ -403,6 +414,10 @@ function Dashboard({ token, user, onLogout }) {
     (total, item) => total + item.quantidade,
     0,
   );
+  const periodLabel = comparisonMode === "day"
+    ? new Date(`${comparisonDate}T00:00:00`).toLocaleDateString("pt-BR")
+    : new Date(`${comparisonDate}-01T00:00:00`).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+  const noProductionMessage = `Não há produção registrada para ${periodLabel}.`;
   const pageTitles = {
     producoes: "Visão geral",
     pecas: "Peças restantes",
@@ -412,9 +427,6 @@ function Dashboard({ token, user, onLogout }) {
     operadores: "Usuários registrados",
   };
   const isAdministrator = user.perfil === "administrador" || user.RE === "90829";
-  const periodLabel = comparisonMode === "day"
-    ? new Date(`${comparisonDate}T00:00:00`).toLocaleDateString("pt-BR")
-    : new Date(`${comparisonDate}-01T00:00:00`).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
 
   return (
     <div className="app-shell">
@@ -644,9 +656,9 @@ function Dashboard({ token, user, onLogout }) {
                           </article>
                         );
                       })}
-                      {comparison.operators.length === 0 && <p className="empty-state">Nenhum operador cadastrado para exibir.</p>}
+                      {comparison.operators.length === 0 && <p className="empty-state">{noProductionMessage}</p>}
                     </div>
-                    <div className="chart-legend"><span><i className="legend-produced" /> Produzido</span><span><i className="legend-target" /> Meta individual por operador</span></div>
+                    {comparison.operators.length > 0 && <div className="chart-legend"><span><i className="legend-produced" /> Produzido</span><span><i className="legend-target" /> Meta individual por operador</span></div>}
                   </div>
                   <div className="content-card chart-card section-production-card">
                     <div className="card-heading"><div><span className="eyebrow text-green">PRODUTIVIDADE DA SEÇÃO</span><h2>Total produzido por seção</h2></div></div>
@@ -657,9 +669,9 @@ function Dashboard({ token, user, onLogout }) {
                           <div className="bar-track"><div className="bar-fill produced" style={{ width: `${Math.min(100, item.quantidade / sectionScale * 100)}%` }} /></div>
                         </div>
                       ))}
-                      {comparison.sections.length === 0 && <p className="empty-state">Não há produção registrada para {periodLabel}.</p>}
+                      {comparison.sections.length === 0 && <p className="empty-state">{noProductionMessage}</p>}
                     </div>
-                    <div className="section-total">Total produzido no período <strong>{periodTotal.toLocaleString("pt-BR")} un.</strong></div>
+                    {comparison.sections.length > 0 && <div className="section-total">Total produzido no período <strong>{periodTotal.toLocaleString("pt-BR")} un.</strong></div>}
                   </div>
                   <div className="content-card chart-card">
                     <div className="card-heading"><div><span className="eyebrow text-green">ESTOQUE EM PROCESSO</span><h2>Peças restantes por seção</h2></div></div>
@@ -722,7 +734,18 @@ export default function App() {
     setSession(result);
   }
 
-  function logout() {
+  async function logout() {
+    const currentSession = session;
+    if (currentSession?.token) {
+      try {
+        await apiRequest("/auth/logout", {
+          token: currentSession.token,
+          method: "POST",
+        });
+      } catch {
+        // Ignora falha de logout no servidor e mantém a sessão local fechada.
+      }
+    }
     localStorage.removeItem("production-session");
     setSession(null);
   }

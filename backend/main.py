@@ -5,7 +5,9 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
+import uuid
 from typing import Any
 
 from dotenv import load_dotenv
@@ -40,6 +42,8 @@ secret_key = os.getenv("APP_SECRET_KEY", "change-this-development-secret")
 if secret_key == "change-this-development-secret" and os.getenv("APP_ENV") == "production":
     raise RuntimeError("Configure APP_SECRET_KEY antes de iniciar em produção.")
 
+active_sessions: dict[str, str] = {}
+session_lock = threading.Lock()
 storage = Storage()
 bearer_scheme = HTTPBearer(auto_error=False)
 PIECES_FIELDS = ("acabamento", "amarracao", "bandagem", "ligacao", "prenca", "solda")
@@ -332,8 +336,13 @@ class ProductionGoalInput(BaseModel):
 
 
 def _create_token(employee_re: str) -> str:
+    claims = {
+        "sub": employee_re,
+        "jti": uuid.uuid4().hex,
+        "exp": int(time.time()) + 60 * 60 * 12,
+    }
     payload = base64.urlsafe_b64encode(
-        json.dumps({"sub": employee_re, "exp": int(time.time()) + 60 * 60 * 12}).encode("utf-8")
+        json.dumps(claims).encode("utf-8")
     ).rstrip(b"=").decode("ascii")
     signature = base64.urlsafe_b64encode(
         hmac.new(secret_key.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).digest()
@@ -358,12 +367,65 @@ def _read_token(token: str) -> str:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sessão inválida ou expirada.") from error
 
 
+def _read_active_session_token(employee_re: str) -> str | None:
+    in_memory_token = active_sessions.get(employee_re)
+    storage_getter = getattr(storage, "get_active_session_token", None)
+    if callable(storage_getter):
+        persisted_token = storage_getter(employee_re)
+        if persisted_token is not None:
+            return persisted_token
+    return in_memory_token
+
+
+def _register_active_session(employee_re: str, token: str) -> None:
+    with session_lock:
+        current_token = _read_active_session_token(employee_re)
+        if current_token and current_token != token:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Este usuário já está logado em outra sessão.",
+            )
+        storage_register = getattr(storage, "register_active_session", None)
+        if callable(storage_register):
+            try:
+                storage_register(employee_re, token)
+            except ValueError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Este usuário já está logado em outra sessão.",
+                ) from error
+        active_sessions[employee_re] = token
+
+
+def _clear_active_session(employee_re: str) -> None:
+    with session_lock:
+        storage_clear = getattr(storage, "clear_active_session", None)
+        if callable(storage_clear):
+            storage_clear(employee_re)
+        active_sessions.pop(employee_re, None)
+
+
+def _is_active_session(employee_re: str, token: str) -> bool:
+    with session_lock:
+        if active_sessions.get(employee_re) == token:
+            return True
+        storage_checker = getattr(storage, "is_active_session", None)
+        if callable(storage_checker):
+            return storage_checker(employee_re, token)
+        return False
+
+
 def current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> dict[str, str]:
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Faça login para continuar.")
     employee_re = _read_token(credentials.credentials)
+    if not _is_active_session(employee_re, credentials.credentials):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sessão inválida. Este usuário já está autenticado em outra instância.",
+        )
     user = storage.get_user(employee_re)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuário não encontrado.")
@@ -394,8 +456,13 @@ def admin_user(user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
 
 
 def _auth_response(user: dict[str, str]) -> dict[str, Any]:
+    token = _create_token(user["RE"])
+    try:
+        _register_active_session(user["RE"], token)
+    except HTTPException:
+        raise
     return {
-        "token": _create_token(user["RE"]),
+        "token": token,
         "usuario": {
             **user,
             "perfil": "administrador" if is_admin(user["RE"]) else "gestor" if is_manager(user["RE"]) else "usuario",
@@ -457,7 +524,22 @@ def login(data: LoginInput) -> dict[str, Any]:
         password_hash = admin_password_hash
     if password_hash is None or not _verify_password(data.senha, password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="RE ou senha incorretos.")
-    return _auth_response(user)
+
+    token = _create_token(user["RE"])
+    _register_active_session(user["RE"], token)
+    return {
+        "token": token,
+        "usuario": {
+            **user,
+            "perfil": "administrador" if is_admin(user["RE"]) else "gestor" if is_manager(user["RE"]) else "usuario",
+        },
+    }
+
+
+@app.post("/api/auth/logout")
+def logout(user: dict[str, str] = Depends(current_user)) -> dict[str, bool]:
+    _clear_active_session(user["RE"])
+    return {"ok": True}
 
 
 @app.get("/api/auth/me")

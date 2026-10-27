@@ -1,4 +1,7 @@
+import tempfile
+import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -237,6 +240,132 @@ class ManagerRouteTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_same_user_cannot_login_in_two_instances_at_once(self) -> None:
+        class ConcurrentLoginStorage:
+            @staticmethod
+            def get_user(employee_re: str) -> dict[str, object] | None:
+                if employee_re == "10001":
+                    return {
+                        "RE": employee_re,
+                        "nome": "Usuário",
+                        "departamento": "Montagem",
+                        "ativo": True,
+                    }
+                return None
+
+            @staticmethod
+            def get_password_hash(employee_re: str) -> str | None:
+                if employee_re == "10001":
+                    return main._hash_password("senha123")
+                return None
+
+            @staticmethod
+            def is_manager(employee_re: str) -> bool:
+                return False
+
+        main.active_sessions.clear()
+        try:
+            with patch.object(main, "storage", ConcurrentLoginStorage()):
+                with TestClient(main.app) as client:
+                    first_login = client.post(
+                        "/api/auth/login",
+                        json={"RE": "10001", "senha": "senha123"},
+                    )
+                    second_login = client.post(
+                        "/api/auth/login",
+                        json={"RE": "10001", "senha": "senha123"},
+                    )
+
+            self.assertEqual(first_login.status_code, 200)
+            self.assertEqual(second_login.status_code, 409)
+            self.assertEqual(
+                second_login.json()["detail"],
+                "Este usuário já está logado em outra sessão.",
+            )
+        finally:
+            main.active_sessions.clear()
+
+    def test_tokens_are_unique_even_for_same_user_in_same_second(self) -> None:
+        with patch("backend.main.time.time", return_value=1700000000):
+            first = main._create_token("10001")
+            second = main._create_token("10001")
+
+        self.assertNotEqual(first, second)
+
+    def test_sqlite_storage_rejects_a_second_active_token_for_same_user(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "active_sessions.db"
+            with patch("backend.storage.DATABASE_PATH", db_path):
+                storage = __import__("backend.storage", fromlist=["Storage"]).Storage()
+                storage.register_active_session("10001", "first-token")
+                with self.assertRaises(ValueError):
+                    storage.register_active_session("10001", "second-token")
+
+    def test_concurrent_logins_are_rejected_for_same_user(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "concurrent_login.db"
+            import backend.storage as storage_module
+
+            with patch("backend.storage.DATABASE_PATH", db_path):
+                storage_module.DATABASE_PATH = db_path
+                storage = storage_module.Storage()
+                storage.create_user("10001", "Usuário", "Montagem")
+                storage.set_password_hash("10001", main._hash_password("senha123"))
+
+                main.active_sessions.clear()
+                with patch.object(main, "storage", storage):
+                    response_codes: list[int] = []
+                    lock = threading.Lock()
+
+                    def login_once() -> None:
+                        with TestClient(main.app) as client:
+                            response = client.post(
+                                "/api/auth/login",
+                                json={"RE": "10001", "senha": "senha123"},
+                            )
+                            with lock:
+                                response_codes.append(response.status_code)
+
+                    threads = [threading.Thread(target=login_once) for _ in range(2)]
+                    for thread in threads:
+                        thread.start()
+                    for thread in threads:
+                        thread.join()
+
+                self.assertEqual(response_codes, [409, 409])
+                self.assertEqual(main.active_sessions, {})
+
+    def test_register_session_rejects_a_second_active_token_for_same_user(self) -> None:
+        main.active_sessions.clear()
+        try:
+            existing_token = main._create_token("10001")
+            class SessionStorage:
+                @staticmethod
+                def get_active_session_token(employee_re: str) -> str | None:
+                    if employee_re == "10001":
+                        return existing_token
+                    return None
+
+                @staticmethod
+                def register_active_session(employee_re: str, token: str) -> None:
+                    return None
+
+                @staticmethod
+                def clear_active_session(employee_re: str) -> None:
+                    return None
+
+                @staticmethod
+                def is_active_session(employee_re: str, token: str) -> bool:
+                    return employee_re == "10001" and token == existing_token
+
+            with patch.object(main, "storage", SessionStorage()):
+                with self.assertRaises(HTTPException) as raised:
+                    main._register_active_session("10001", main._create_token("10001"))
+
+            self.assertEqual(raised.exception.status_code, 409)
+        finally:
+            main.active_sessions.clear()
 
 if __name__ == "__main__":
     unittest.main()

@@ -72,7 +72,7 @@ export function buildProductionComparison(
   const operators = new Map();
   const productionSections = new Map();
 
-  for (const record of productions) {
+  for (const record of periodProductions) {
     const section = String(record.secao || "").trim() || "Seção não informada";
     const operator = String(record.operador || "").trim() || "Operador não informado";
     const operatorRe = String(record.usuarioRe || "").trim();

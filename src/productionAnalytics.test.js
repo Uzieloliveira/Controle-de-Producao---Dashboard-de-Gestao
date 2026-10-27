@@ -65,12 +65,12 @@ test("comparison chart uses the latest goal for the operator's section", () => {
   assert.equal(result.operators[0].meta, 23);
 });
 
-test("operators remain visible with zero production on the selected date", () => {
+test("selected date with no production records returns an empty comparison", () => {
   const result = buildProductionComparison(productions, goals, "day", "2026-10-22");
 
-  assert.equal(result.operators.length, 3);
-  assert.ok(result.operators.every((item) => item.quantidade === 0));
-  assert.ok(result.sections.every((item) => item.quantidade === 0));
+  assert.deepEqual(result.operators, []);
+  assert.deepEqual(result.sections, []);
+  assert.deepEqual(result.remainingPiecesByType, []);
 });
 
 test("operators without production records are not included in production comparison", () => {
@@ -146,8 +146,6 @@ test("remaining piece types sum each operator's latest snapshot within the selec
 
   assert.deepEqual(result.sections, [
     { secao: "Montagem", quantidade: 15 },
-    { secao: "Pintura", quantidade: 0 },
-    { secao: "Corte", quantidade: 0 },
   ]);
   assert.deepEqual(result.remainingPiecesByType, [
     { field: "solda", quantidade: 10 },
