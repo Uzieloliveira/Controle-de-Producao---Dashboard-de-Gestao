@@ -5,8 +5,24 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterator
 
+from dotenv import load_dotenv
+
+
+load_dotenv()
 
 DATABASE_PATH = Path(__file__).with_name("controle_producao.db")
+
+
+def normalize_employee_re(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if digits:
+        return digits
+    return text
 
 
 class Storage:
@@ -14,12 +30,28 @@ class Storage:
         self.firestore = None
         self.use_firestore = os.getenv("FIRESTORE_ENABLED", "").lower() == "true"
         if self.use_firestore:
+            self.firestore = self._create_firestore_client()
+            if self.firestore is None:
+                self.use_firestore = False
+        if not self.use_firestore:
+            self._initialize_sqlite()
+
+    def _create_firestore_client(self) -> Any | None:
+        try:
             from google.cloud import firestore
 
             project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
-            self.firestore = firestore.Client(project=project_id) if project_id else firestore.Client()
-        else:
-            self._initialize_sqlite()
+            emulator_host = os.getenv("FIRESTORE_EMULATOR_HOST")
+            if emulator_host:
+                return firestore.Client(project=project_id or "local-dev-project")
+            return firestore.Client(project=project_id) if project_id else firestore.Client()
+        except Exception:
+            if os.getenv("APP_ENV", "development").lower() == "production":
+                raise RuntimeError(
+                    "Não foi possível conectar ao Firestore. Verifique GOOGLE_CLOUD_PROJECT, "
+                    "GOOGLE_APPLICATION_CREDENTIALS ou o ambiente do projeto."
+                ) from None
+            return None
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(DATABASE_PATH)
@@ -83,12 +115,31 @@ class Storage:
                     re TEXT PRIMARY KEY REFERENCES users(re)
                 );
                 CREATE TABLE IF NOT EXISTS active_sessions (
-                    re TEXT PRIMARY KEY,
+                    re TEXT NOT NULL,
                     token TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (re, token)
                 );
                 """
             )
+            migration_needed = False
+            try:
+                pragma = connection.execute(
+                    "PRAGMA table_info(active_sessions)"
+                ).fetchall()
+                if pragma and pragma[0][5] == 1 and len(pragma) == 3:
+                    migration_needed = True
+            except Exception:
+                migration_needed = False
+            if migration_needed:
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS active_sessions_new (re TEXT NOT NULL, token TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (re, token))"
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO active_sessions_new (re, token, created_at) SELECT re, token, created_at FROM active_sessions"
+                )
+                connection.execute("DROP TABLE active_sessions")
+                connection.execute("ALTER TABLE active_sessions_new RENAME TO active_sessions")
             user_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(users)").fetchall()
             }
@@ -119,16 +170,41 @@ class Storage:
         if not document:
             return None
         return {
-            "RE": str(document.get("RE", "")),
+            "RE": normalize_employee_re(document.get("RE", "")),
             "nome": str(document.get("nome", "")),
             "departamento": str(document.get("departamento", "")),
             "ativo": bool(document.get("ativo", True)),
         }
 
+    def _find_firestore_snapshot(self, collection_name: str, employee_re: str) -> Any:
+        normalized_employee_re = normalize_employee_re(employee_re)
+        if not normalized_employee_re:
+            return None
+
+        collection = self.firestore.collection(collection_name)
+        document = collection.document(normalized_employee_re).get()
+        if document.exists:
+            return document
+
+        for snapshot in collection.stream():
+            data = snapshot.to_dict() or {}
+            values = {
+                normalize_employee_re(snapshot.id),
+                normalize_employee_re(data.get("RE", "")),
+                normalize_employee_re(data.get("re", "")),
+                normalize_employee_re(data.get("usuarioRe", "")),
+            }
+            if normalized_employee_re in values:
+                return snapshot
+        return None
+
     def get_user(self, employee_re: str) -> dict[str, Any] | None:
+        employee_re = normalize_employee_re(employee_re)
         if self.use_firestore:
-            snapshot = self.firestore.collection("usuarios").document(employee_re).get()
-            user = self._user_record(snapshot.to_dict() if snapshot.exists else None)
+            snapshot = self._find_firestore_snapshot("usuarios", employee_re)
+            if snapshot is None:
+                return None
+            user = self._user_record(snapshot.to_dict() if getattr(snapshot, "exists", True) else None)
             if user is not None:
                 user["RE"] = user["RE"] or employee_re
             return user
@@ -139,13 +215,14 @@ class Storage:
         if row is None:
             return None
         return {
-            "RE": row["re"],
+            "RE": normalize_employee_re(row["re"]),
             "nome": row["name"],
             "departamento": row["department"],
             "ativo": bool(row["active"]),
         }
 
     def create_user(self, employee_re: str, name: str, department: str = "") -> dict[str, Any]:
+        employee_re = normalize_employee_re(employee_re)
         user = {"RE": employee_re, "nome": name, "departamento": department, "ativo": True}
         if self.use_firestore:
             self.firestore.collection("usuarios").document(employee_re).set(user)
@@ -163,7 +240,7 @@ class Storage:
             for snapshot in self.firestore.collection("usuarios").stream():
                 record = self._user_record(snapshot.to_dict())
                 if record is not None:
-                    record["RE"] = record["RE"] or snapshot.id
+                    record["RE"] = normalize_employee_re(record["RE"] or snapshot.id)
                     users.append(record)
             return sorted(users, key=lambda item: item["RE"])
         with self._connection() as connection:
@@ -172,7 +249,7 @@ class Storage:
             ).fetchall()
         return [
             {
-                "RE": row["re"],
+                "RE": normalize_employee_re(row["re"]),
                 "nome": row["name"],
                 "departamento": row["department"],
                 "ativo": bool(row["active"]),
@@ -181,6 +258,7 @@ class Storage:
         ]
 
     def update_user(self, employee_re: str, name: str, department: str) -> dict[str, Any]:
+        employee_re = normalize_employee_re(employee_re)
         if self.use_firestore:
             reference = self.firestore.collection("usuarios").document(employee_re)
             reference.update({"nome": name, "departamento": department})
@@ -196,6 +274,7 @@ class Storage:
         return user
 
     def set_user_active(self, employee_re: str, active: bool) -> None:
+        employee_re = normalize_employee_re(employee_re)
         if self.use_firestore:
             self.firestore.collection("usuarios").document(employee_re).update(
                 {"ativo": active}
@@ -208,9 +287,12 @@ class Storage:
                 )
 
     def get_password_hash(self, employee_re: str) -> str | None:
+        employee_re = normalize_employee_re(employee_re)
         if self.use_firestore:
-            snapshot = self.firestore.collection("contas").document(employee_re).get()
-            data = snapshot.to_dict() if snapshot.exists else None
+            snapshot = self._find_firestore_snapshot("contas", employee_re)
+            if snapshot is None:
+                return None
+            data = snapshot.to_dict() if getattr(snapshot, "exists", True) else None
             return str(data["passwordHash"]) if data and "passwordHash" in data else None
         with self._connection() as connection:
             row = connection.execute(
@@ -219,6 +301,7 @@ class Storage:
         return row["password_hash"] if row else None
 
     def set_password_hash(self, employee_re: str, password_hash: str) -> None:
+        employee_re = normalize_employee_re(employee_re)
         if self.use_firestore:
             self.firestore.collection("contas").document(employee_re).set(
                 {"usuarioRe": employee_re, "passwordHash": password_hash}
@@ -234,60 +317,100 @@ class Storage:
                 )
 
     def register_active_session(self, employee_re: str, token: str) -> None:
+        employee_re = normalize_employee_re(employee_re)
+        if not employee_re or not token:
+            return
         if self.use_firestore:
-            document = self.firestore.collection("active_sessions").document(employee_re)
-            current = document.get()
-            existing_token = str((current.to_dict() or {}).get("token") or "") or None
-            if existing_token is not None and existing_token != token:
-                raise ValueError("Este usuário já está logado em outra sessão.")
-            document.set({
+            collection = self.firestore.collection("active_sessions")
+            for snapshot in collection.where("re", "==", employee_re).stream():
+                snapshot.reference.delete()
+            collection.document(f"{employee_re}:{token}").set({
                 "re": employee_re,
                 "token": token,
             })
             return
         with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT token FROM active_sessions WHERE re = ?",
+            connection.execute(
+                "DELETE FROM active_sessions WHERE re = ?",
                 (employee_re,),
-            ).fetchone()
-            if row is not None and row["token"] != token:
-                raise ValueError("Este usuário já está logado em outra sessão.")
+            )
             connection.execute(
                 """
-                INSERT INTO active_sessions (re, token)
-                VALUES (?, ?)
-                ON CONFLICT(re)
-                DO UPDATE SET token = excluded.token, created_at = CURRENT_TIMESTAMP
+                INSERT INTO active_sessions (re, token, created_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
                 """,
                 (employee_re, token),
             )
 
-    def clear_active_session(self, employee_re: str) -> None:
+    def clear_active_session(self, employee_re: str, token: str | None = None) -> None:
+        employee_re = normalize_employee_re(employee_re)
         if self.use_firestore:
-            self.firestore.collection("active_sessions").document(employee_re).delete()
+            if token is None:
+                collection = self.firestore.collection("active_sessions")
+                for snapshot in collection.where("re", "==", employee_re).stream():
+                    snapshot.reference.delete()
+                return
+            document_id = f"{employee_re}:{token}"
+            self.firestore.collection("active_sessions").document(document_id).delete()
             return
         with self._connection() as connection:
-            connection.execute("DELETE FROM active_sessions WHERE re = ?", (employee_re,))
+            if token is None:
+                connection.execute("DELETE FROM active_sessions WHERE re = ?", (employee_re,))
+            else:
+                connection.execute(
+                    "DELETE FROM active_sessions WHERE re = ? AND token = ?",
+                    (employee_re, token),
+                )
+
+    def clear_all_active_sessions(self) -> None:
+        if self.use_firestore:
+            for snapshot in self.firestore.collection("active_sessions").stream():
+                snapshot.reference.delete()
+            return
+        with self._connection() as connection:
+            connection.execute("DELETE FROM active_sessions")
+
+    def get_active_session_tokens(self, employee_re: str) -> list[str]:
+        employee_re = normalize_employee_re(employee_re)
+        if self.use_firestore:
+            tokens: list[str] = []
+            for snapshot in self.firestore.collection("active_sessions").where("re", "==", employee_re).stream():
+                data = snapshot.to_dict() or {}
+                token = str(data.get("token") or "").strip()
+                if token:
+                    tokens.append(token)
+            return tokens
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT token FROM active_sessions WHERE re = ?",
+                (employee_re,),
+            ).fetchall()
+        return [row["token"] for row in rows]
 
     def get_active_session_token(self, employee_re: str) -> str | None:
-        if self.use_firestore:
-            snapshot = self.firestore.collection("active_sessions").document(employee_re).get()
-            if not snapshot.exists:
-                return None
-            return str((snapshot.to_dict() or {}).get("token") or "") or None
-        with self._connection() as connection:
-            row = connection.execute(
-                "SELECT token FROM active_sessions WHERE re = ?", (employee_re,)
-            ).fetchone()
-        return row["token"] if row is not None else None
+        tokens = self.get_active_session_tokens(employee_re)
+        return tokens[0] if tokens else None
 
     def is_active_session(self, employee_re: str, token: str) -> bool:
-        return self.get_active_session_token(employee_re) == token
+        employee_re = normalize_employee_re(employee_re)
+        if not employee_re or not token:
+            return False
+        if self.use_firestore:
+            document_id = f"{employee_re}:{token}"
+            snapshot = self.firestore.collection("active_sessions").document(document_id).get()
+            return snapshot.exists
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM active_sessions WHERE re = ? AND token = ? LIMIT 1",
+                (employee_re, token),
+            ).fetchone()
+        return row is not None
 
     def is_manager(self, employee_re: str) -> bool:
+        employee_re = normalize_employee_re(employee_re)
         if self.use_firestore:
-            return self.firestore.collection("gestores").document(employee_re).get().exists
+            snapshot = self._find_firestore_snapshot("gestores", employee_re)
+            return snapshot is not None
         with self._connection() as connection:
             row = connection.execute(
                 "SELECT 1 FROM gestores WHERE re = ?", (employee_re,)
@@ -299,13 +422,13 @@ class Storage:
             manager_res = set()
             for snapshot in self.firestore.collection("gestores").stream():
                 document = snapshot.to_dict() or {}
-                employee_re = str(document.get("usuarioRe") or snapshot.id).strip()
+                employee_re = normalize_employee_re(document.get("usuarioRe") or snapshot.id)
                 if employee_re:
                     manager_res.add(employee_re)
             return manager_res
         with self._connection() as connection:
             rows = connection.execute("SELECT re FROM gestores ORDER BY re").fetchall()
-        return {row["re"] for row in rows}
+        return {normalize_employee_re(row["re"]) for row in rows}
 
     def list_managers(self) -> list[dict[str, str]]:
         managers = []
@@ -316,6 +439,7 @@ class Storage:
         return managers
 
     def add_manager(self, employee_re: str) -> None:
+        employee_re = normalize_employee_re(employee_re)
         if self.use_firestore:
             self.firestore.collection("gestores").document(employee_re).set(
                 {"usuarioRe": employee_re}

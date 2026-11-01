@@ -1,4 +1,6 @@
+import os
 import unittest
+from unittest.mock import patch
 
 from backend.storage import Storage
 
@@ -74,6 +76,21 @@ class FirestoreStorageTests(unittest.TestCase):
 
     def test_list_manager_res_returns_document_ids(self) -> None:
         self.assertEqual(self.storage.list_manager_res(), {"12345"})
+
+    def test_user_lookup_normalizes_re_formatting(self) -> None:
+        snapshot = Snapshot("000123", {"RE": " 123 ", "nome": "João", "departamento": "Pintura", "ativo": True})
+        self.storage.firestore.collections["usuarios"] = [snapshot]
+        self.storage.firestore.documents["usuarios"] = {"000123": snapshot}
+
+        self.assertEqual(self.storage.get_user("123")["RE"], "123")
+        self.assertEqual(self.storage.get_user("000123")["RE"], "123")
+
+    @patch.dict(os.environ, {"FIRESTORE_ENABLED": "true", "APP_ENV": "development"}, clear=False)
+    @patch("google.cloud.firestore.Client", side_effect=RuntimeError("ADC missing"))
+    def test_firestore_connection_failure_falls_back_to_sqlite(self, _mock_client) -> None:
+        storage = Storage()
+        self.assertFalse(storage.use_firestore)
+        self.assertIsNone(storage.firestore)
 
 
 if __name__ == "__main__":

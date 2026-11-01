@@ -1,8 +1,20 @@
 {
   "name": "controle-de-producao",
-  "private": true,
   "version": "1.0.0",
+  "private": true,
+  "description": "Aplicação web para acompanhar produção e peças restantes, comparar resultados por período, cadastrar metas por seção e administrar usuários e gestores. A interface é feita com React e Vite; a API é feita com Python e FastAPI. O armazenamento principal pode ser o Cloud Firestore; há também um modo SQLite para desenvolvimento local.",
+  "homepage": "https://github.com/Uzieloliveira/Controle-de-Producao---Dashboard-de-Gestao#readme",
+  "bugs": {
+    "url": "https://github.com/Uzieloliveira/Controle-de-Producao---Dashboard-de-Gestao/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Uzieloliveira/Controle-de-Producao---Dashboard-de-Gestao.git"
+  },
+  "license": "ISC",
+  "author": "",
   "type": "module",
+  "main": "vite.config.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

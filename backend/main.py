@@ -1,3 +1,5 @@
+# main.py — API Controle de Produção
+
 import base64
 import hashlib
 import hmac
@@ -11,6 +13,9 @@ import uuid
 from typing import Any
 
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -19,9 +24,8 @@ from pydantic import BaseModel, Field, field_validator
 from backend.storage import Storage
 
 
-load_dotenv()
-
 app = FastAPI(title="API Controle de Produção", version="1.0.0")
+
 allowed_origins = [
     origin.strip()
     for origin in os.getenv(
@@ -30,6 +34,7 @@ allowed_origins = [
     ).split(",")
     if origin.strip()
 ]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -38,41 +43,108 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
-secret_key = os.getenv("APP_SECRET_KEY", "change-this-development-secret")
-if secret_key == "change-this-development-secret" and os.getenv("APP_ENV") == "production":
-    raise RuntimeError("Configure APP_SECRET_KEY antes de iniciar em produção.")
+secret_key = os.getenv(
+    "APP_SECRET_KEY",
+    "change-this-development-secret"
+)
 
-active_sessions: dict[str, str] = {}
-session_lock = threading.Lock()
+if (
+    secret_key == "change-this-development-secret"
+    and os.getenv("APP_ENV") == "production"
+):
+    raise RuntimeError(
+        "Configure APP_SECRET_KEY antes de iniciar em produção."
+    )
+
+
+# ============================================================
+# CONFIGURAÇÃO DE SESSÕES
+# ============================================================
+
+# Cada RE deve possuir apenas uma sessão ativa por vez.
+active_sessions: dict[str, set[str]] = {}
+
+session_lock = threading.RLock()
+
 storage = Storage()
-bearer_scheme = HTTPBearer(auto_error=False)
-PIECES_FIELDS = ("acabamento", "amarracao", "bandagem", "ligacao", "prenca", "solda")
-admin_re = os.getenv("ADMIN_RE", "90829").strip()
-admin_password_hash = os.getenv("ADMIN_PASSWORD_HASH", "").strip()
 
+bearer_scheme = HTTPBearer(auto_error=False)
+
+PIECES_FIELDS = (
+    "acabamento",
+    "amarracao",
+    "bandagem",
+    "ligacao",
+    "prenca",
+    "solda",
+)
+
+admin_re = os.getenv("ADMIN_RE", "90829").strip()
+
+admin_password_hash = os.getenv(
+    "ADMIN_PASSWORD_HASH",
+    ""
+).strip()
+
+
+# ============================================================
+# SENHAS
+# ============================================================
 
 def _hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
-    salt_encoded = base64.urlsafe_b64encode(salt).rstrip(b"=").decode("ascii")
-    digest_encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+    digest = hashlib.scrypt(
+        password.encode("utf-8"),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+    )
+
+    salt_encoded = base64.urlsafe_b64encode(
+        salt
+    ).rstrip(b"=").decode("ascii")
+
+    digest_encoded = base64.urlsafe_b64encode(
+        digest
+    ).rstrip(b"=").decode("ascii")
+
     return f"{salt_encoded}${digest_encoded}"
 
 
 def _verify_password(password: str, stored_hash: str) -> bool:
     try:
         salt_part, digest_part = stored_hash.split("$", maxsplit=1)
-        salt = base64.urlsafe_b64decode(salt_part + "=" * (-len(salt_part) % 4))
+
+        salt = base64.urlsafe_b64decode(
+            salt_part + "=" * (-len(salt_part) % 4)
+        )
+
         expected_digest = base64.urlsafe_b64decode(
             digest_part + "=" * (-len(digest_part) % 4)
         )
+
         actual_digest = hashlib.scrypt(
-            password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1
+            password.encode("utf-8"),
+            salt=salt,
+            n=2**14,
+            r=8,
+            p=1,
         )
-        return hmac.compare_digest(actual_digest, expected_digest)
+
+        return hmac.compare_digest(
+            actual_digest,
+            expected_digest,
+        )
+
     except (ValueError, TypeError):
         return False
 
+
+# ============================================================
+# PERFIS
+# ============================================================
 
 def is_admin(employee_re: str) -> bool:
     return employee_re == admin_re
@@ -81,10 +153,18 @@ def is_admin(employee_re: str) -> bool:
 def is_manager(employee_re: str) -> bool:
     configured_managers = {
         value.strip()
-        for value in os.getenv("DASHBOARD_MANAGER_RES", "").split(",")
+        for value in os.getenv(
+            "DASHBOARD_MANAGER_RES",
+            ""
+        ).split(",")
         if value.strip()
     }
-    return is_admin(employee_re) or employee_re in configured_managers or storage.is_manager(employee_re)
+
+    return (
+        is_admin(employee_re)
+        or employee_re in configured_managers
+        or storage.is_manager(employee_re)
+    )
 
 
 def department_key(value: Any) -> str:
@@ -94,7 +174,10 @@ def department_key(value: Any) -> str:
 def configured_manager_res() -> set[str]:
     return {
         value.strip()
-        for value in os.getenv("DASHBOARD_MANAGER_RES", "").split(",")
+        for value in os.getenv(
+            "DASHBOARD_MANAGER_RES",
+            ""
+        ).split(",")
         if value.strip()
     }
 
@@ -103,15 +186,23 @@ def manager_res() -> set[str]:
     return configured_manager_res() | storage.list_manager_res()
 
 
+# ============================================================
+# FILTROS POR DEPARTAMENTO
+# ============================================================
+
 def records_for_department(
     records: list[dict[str, Any]],
     user: dict[str, Any],
     users: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+
     if is_admin(user["RE"]):
         return records
 
-    target_department = department_key(user.get("departamento"))
+    target_department = department_key(
+        user.get("departamento")
+    )
+
     if not target_department:
         return []
 
@@ -120,13 +211,17 @@ def records_for_department(
         for item in users
         if str(item.get("RE", "")).strip()
     }
+
     return [
         record
         for record in records
         if department_key(
             record.get("departamento")
             or record.get("department")
-            or users_by_re.get(str(record.get("usuarioRe", "")).strip(), {}).get("departamento")
+            or users_by_re.get(
+                str(record.get("usuarioRe", "")).strip(),
+                {},
+            ).get("departamento")
         ) == target_department
     ]
 
@@ -137,10 +232,14 @@ def goals_for_department(
     productions: list[dict[str, Any]],
     users: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+
     if is_admin(user["RE"]):
         return goals
 
-    target_department = department_key(user.get("departamento"))
+    target_department = department_key(
+        user.get("departamento")
+    )
+
     if not target_department:
         return []
 
@@ -149,15 +248,25 @@ def goals_for_department(
         for item in users
         if str(item.get("RE", "")).strip()
     }
+
     departments_by_section: dict[str, set[str]] = {}
+
     for record in productions:
         section_id = department_key(record.get("secao"))
+
         department_id = department_key(
             record.get("departamento")
-            or users_by_re.get(str(record.get("usuarioRe", "")).strip(), {}).get("departamento")
+            or users_by_re.get(
+                str(record.get("usuarioRe", "")).strip(),
+                {},
+            ).get("departamento")
         )
+
         if section_id and department_id:
-            departments_by_section.setdefault(section_id, set()).add(department_id)
+            departments_by_section.setdefault(
+                section_id,
+                set(),
+            ).add(department_id)
 
     return [
         goal
@@ -175,44 +284,69 @@ def goal_department_for_section(
     productions: list[dict[str, Any]],
     users: list[dict[str, Any]],
 ) -> str:
+
     users_by_re = {
         str(item.get("RE", "")).strip(): item
         for item in users
         if str(item.get("RE", "")).strip()
     }
+
     section_id = department_key(section)
+
     departments = {
         department_key(department): str(department).strip()
         for record in productions
         if department_key(record.get("secao")) == section_id
         for department in [
             record.get("departamento")
-            or users_by_re.get(str(record.get("usuarioRe", "")).strip(), {}).get("departamento")
+            or users_by_re.get(
+                str(record.get("usuarioRe", "")).strip(),
+                {},
+            ).get("departamento")
         ]
         if department_key(department)
     }
 
-    manager_department = str(user.get("departamento", "")).strip()
-    manager_department_id = department_key(manager_department)
+    manager_department = str(
+        user.get("departamento", "")
+    ).strip()
+
+    manager_department_id = department_key(
+        manager_department
+    )
+
     if len(departments) > 1:
+
         if manager_department_id in departments:
             return manager_department
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Esta seção existe em mais de um departamento. Cadastre a meta com um gestor de um desses departamentos.",
+            detail=(
+                "Esta seção existe em mais de um departamento. "
+                "Cadastre a meta com um gestor de um desses departamentos."
+            ),
         )
+
     if departments:
         return next(iter(departments.values()))
+
     if manager_department_id:
         return manager_department
+
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail="Não foi possível identificar o departamento desta seção.",
     )
 
 
-def ensure_manager_department_available(employee_re: str, department: str) -> None:
+def ensure_manager_department_available(
+    employee_re: str,
+    department: str,
+) -> None:
+
     department_id = department_key(department)
+
     if not department_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -224,22 +358,34 @@ def ensure_manager_department_available(employee_re: str, department: str) -> No
         for item in storage.list_users()
         if str(item.get("RE", "")).strip()
     }
+
     current_manager_res = manager_res()
+
     conflict = next(
         (
-            item for re_value, item in users_by_re.items()
+            item
+            for re_value, item in users_by_re.items()
             if re_value != employee_re
             and re_value in current_manager_res
-            and department_key(item.get("departamento")) == department_id
+            and department_key(item.get("departamento"))
+            == department_id
         ),
         None,
     )
+
     if conflict:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Já existe um gestor para o departamento {conflict.get('departamento')}.",
+            detail=(
+                f"Já existe um gestor para o departamento "
+                f"{conflict.get('departamento')}."
+            ),
         )
 
+
+# ============================================================
+# MODELOS PYDANTIC
+# ============================================================
 
 class RegistrationInput(BaseModel):
     nome: str = Field(min_length=1, max_length=100)
@@ -251,16 +397,20 @@ class RegistrationInput(BaseModel):
     @classmethod
     def strip_first_name(cls, value: str) -> str:
         value = value.strip()
+
         if not value:
             raise ValueError("Informe o primeiro nome.")
+
         return value.split()[0]
 
     @field_validator("departamento")
     @classmethod
     def strip_department(cls, value: str) -> str:
         value = value.strip()
+
         if not value:
             raise ValueError("Informe o departamento.")
+
         return value
 
     @field_validator("RE", mode="before")
@@ -268,8 +418,15 @@ class RegistrationInput(BaseModel):
     def strip_re(cls, value: Any) -> str:
         if isinstance(value, str):
             value = value.strip()
-        if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,5}", value):
-            raise ValueError("O RE deve conter somente números e ter no máximo 5 dígitos.")
+
+        if (
+            not isinstance(value, str)
+            or not re.fullmatch(r"[0-9]{1,5}", value)
+        ):
+            raise ValueError(
+                "O RE deve conter somente números e ter no máximo 5 dígitos."
+            )
+
         return value
 
 
@@ -282,8 +439,15 @@ class LoginInput(BaseModel):
     def strip_re(cls, value: Any) -> str:
         if isinstance(value, str):
             value = value.strip()
-        if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,5}", value):
-            raise ValueError("O RE deve conter somente números e ter no máximo 5 dígitos.")
+
+        if (
+            not isinstance(value, str)
+            or not re.fullmatch(r"[0-9]{1,5}", value)
+        ):
+            raise ValueError(
+                "O RE deve conter somente números e ter no máximo 5 dígitos."
+            )
+
         return value
 
 
@@ -295,8 +459,15 @@ class ManagerInput(BaseModel):
     def strip_re(cls, value: Any) -> str:
         if isinstance(value, str):
             value = value.strip()
-        if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,5}", value):
-            raise ValueError("O RE deve conter somente números e ter no máximo 5 dígitos.")
+
+        if (
+            not isinstance(value, str)
+            or not re.fullmatch(r"[0-9]{1,5}", value)
+        ):
+            raise ValueError(
+                "O RE deve conter somente números e ter no máximo 5 dígitos."
+            )
+
         return value
 
 
@@ -308,8 +479,10 @@ class UserUpdateInput(BaseModel):
     @classmethod
     def strip_first_name(cls, value: str) -> str:
         value = value.strip()
+
         if not value:
             raise ValueError("Informe o primeiro nome.")
+
         return value.split()[0]
 
     @field_validator("departamento")
@@ -330,246 +503,615 @@ class ProductionGoalInput(BaseModel):
     @classmethod
     def strip_section(cls, value: str) -> str:
         value = " ".join(value.split())
+
         if not value:
             raise ValueError("Informe a seção.")
+
         return value
 
 
+# ============================================================
+# AUTENTICAÇÃO E TOKENS
+# ============================================================
+
 def _create_token(employee_re: str) -> str:
+
     claims = {
         "sub": employee_re,
         "jti": uuid.uuid4().hex,
         "exp": int(time.time()) + 60 * 60 * 12,
     }
+
     payload = base64.urlsafe_b64encode(
         json.dumps(claims).encode("utf-8")
     ).rstrip(b"=").decode("ascii")
+
     signature = base64.urlsafe_b64encode(
-        hmac.new(secret_key.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).digest()
+        hmac.new(
+            secret_key.encode("utf-8"),
+            payload.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
     ).rstrip(b"=").decode("ascii")
+
     return f"{payload}.{signature}"
 
 
 def _read_token(token: str) -> str:
+
     try:
         payload, signature = token.split(".", maxsplit=1)
+
         expected_signature = base64.urlsafe_b64encode(
-            hmac.new(secret_key.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).digest()
+            hmac.new(
+                secret_key.encode("utf-8"),
+                payload.encode("ascii"),
+                hashlib.sha256,
+            ).digest()
         ).rstrip(b"=").decode("ascii")
-        if not hmac.compare_digest(signature, expected_signature):
+
+        if not hmac.compare_digest(
+            signature,
+            expected_signature,
+        ):
             raise ValueError("Assinatura inválida.")
-        decoded_payload = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+
+        decoded_payload = base64.urlsafe_b64decode(
+            payload + "=" * (-len(payload) % 4)
+        )
+
         claims = json.loads(decoded_payload)
-        if not isinstance(claims.get("sub"), str) or claims.get("exp", 0) < time.time():
+
+        if (
+            not isinstance(claims.get("sub"), str)
+            or not isinstance(claims.get("exp"), (int, float))
+            or claims.get("exp", 0) < time.time()
+        ):
             raise ValueError("Token expirado ou inválido.")
+
         return claims["sub"]
+
     except (ValueError, TypeError, json.JSONDecodeError) as error:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sessão inválida ou expirada.") from error
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sessão inválida ou expirada.",
+        ) from error
+
+
+def _session_tokens(employee_re: str) -> set[str]:
+    tokens = active_sessions.get(employee_re, set())
+    if isinstance(tokens, str):
+        return {tokens}
+    if isinstance(tokens, (set, list, tuple)):
+        return set(tokens)
+    return set()
 
 
 def _read_active_session_token(employee_re: str) -> str | None:
-    in_memory_token = active_sessions.get(employee_re)
+    with session_lock:
+        tokens = _session_tokens(employee_re)
+        if tokens:
+            token = next(iter(tokens))
+            try:
+                _read_token(token)
+                return token
+            except HTTPException:
+                _clear_active_session(employee_re, token)
+                return None
+
     storage_getter = getattr(storage, "get_active_session_token", None)
     if callable(storage_getter):
-        persisted_token = storage_getter(employee_re)
-        if persisted_token is not None:
-            return persisted_token
-    return in_memory_token
-
-
-def _register_active_session(employee_re: str, token: str) -> None:
-    with session_lock:
-        current_token = _read_active_session_token(employee_re)
-        if current_token and current_token != token:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Este usuário já está logado em outra sessão.",
-            )
-        storage_register = getattr(storage, "register_active_session", None)
-        if callable(storage_register):
+        token = storage_getter(employee_re)
+        if token is not None:
             try:
-                storage_register(employee_re, token)
-            except ValueError as error:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Este usuário já está logado em outra sessão.",
-                ) from error
-        active_sessions[employee_re] = token
+                _read_token(token)
+                return token
+            except HTTPException:
+                _clear_active_session(employee_re, token)
+                return None
+
+    return None
 
 
-def _clear_active_session(employee_re: str) -> None:
+# ============================================================
+# GERENCIAMENTO DE SESSÕES
+# ============================================================
+
+def _register_active_session(
+    employee_re: str,
+    token: str,
+) -> None:
+
+    if not employee_re or not token:
+        return
+
     with session_lock:
-        storage_clear = getattr(storage, "clear_active_session", None)
+
+        # Mantém apenas a sessão mais recente por usuário.
+        previous_tokens = _session_tokens(employee_re)
+        active_sessions.pop(employee_re, None)
+        if previous_tokens and token not in previous_tokens:
+            previous_tokens.clear()
+
+        active_sessions[employee_re] = {token}
+
+        storage_clear = getattr(
+            storage,
+            "clear_active_session",
+            None,
+        )
         if callable(storage_clear):
             storage_clear(employee_re)
-        active_sessions.pop(employee_re, None)
+
+        storage_register = getattr(
+            storage,
+            "register_active_session",
+            None,
+        )
+
+        if callable(storage_register):
+            storage_register(employee_re, token)
 
 
-def _is_active_session(employee_re: str, token: str) -> bool:
+def _clear_active_session(
+    employee_re: str,
+    token: str | None = None,
+) -> None:
+
     with session_lock:
-        if active_sessions.get(employee_re) == token:
+
+        storage_clear = getattr(
+            storage,
+            "clear_active_session",
+            None,
+        )
+
+        if callable(storage_clear):
+            try:
+                storage_clear(employee_re, token)
+            except TypeError:
+                try:
+                    storage_clear(employee_re)
+                except TypeError:
+                    pass
+
+        if token is None:
+            active_sessions.pop(employee_re, None)
+            return
+
+        tokens = active_sessions.get(employee_re)
+        if isinstance(tokens, str):
+            tokens = {tokens}
+            active_sessions[employee_re] = tokens
+
+        if tokens is not None:
+            if isinstance(tokens, set):
+                tokens.discard(token)
+                if not tokens:
+                    active_sessions.pop(employee_re, None)
+            else:
+                active_sessions.pop(employee_re, None)
+
+
+def _is_active_session(
+    employee_re: str,
+    token: str,
+) -> bool:
+
+    with session_lock:
+
+        tokens = _session_tokens(employee_re)
+        if token in tokens:
             return True
-        storage_checker = getattr(storage, "is_active_session", None)
+
+        storage_checker = getattr(
+            storage,
+            "is_active_session",
+            None,
+        )
+
         if callable(storage_checker):
             return storage_checker(employee_re, token)
+
         return False
 
 
+# ============================================================
+# USUÁRIO AUTENTICADO
+# ============================================================
+
 def current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> dict[str, str]:
+    credentials: HTTPAuthorizationCredentials | None = Depends(
+        bearer_scheme
+    ),
+) -> dict[str, Any]:
+
     if credentials is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Faça login para continuar.")
-    employee_re = _read_token(credentials.credentials)
-    if not _is_active_session(employee_re, credentials.credentials):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Sessão inválida. Este usuário já está autenticado em outra instância.",
+            detail="Faça login para continuar.",
         )
+
+    token = credentials.credentials
+
+    employee_re = _read_token(token)
+
+    if not _is_active_session(employee_re, token):
+
+        # IMPORTANTE:
+        # Remove somente o token inválido.
+        # Nunca apaga as outras sessões do usuário.
+        try:
+            _clear_active_session(employee_re, token)
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sessão inválida ou expirada.",
+        )
+
     user = storage.get_user(employee_re)
+
     if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuário não encontrado.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuário não encontrado.",
+        )
+
     if not user["ativo"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Este usuário está bloqueado.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Este usuário está bloqueado.",
+        )
+
     return {
         **user,
-        "perfil": "administrador" if is_admin(employee_re) else "gestor" if is_manager(employee_re) else "usuario",
+        "perfil": (
+            "administrador"
+            if is_admin(employee_re)
+            else "gestor"
+            if is_manager(employee_re)
+            else "usuario"
+        ),
     }
 
 
-def manager_user(user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
+def manager_user(
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+
     if not is_manager(user["RE"]):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Acesso restrito a gestores autorizados.",
         )
+
     return user
 
 
-def admin_user(user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
+def admin_user(
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+
     if not is_admin(user["RE"]):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Acesso restrito ao administrador do sistema.",
         )
+
     return user
 
 
-def _auth_response(user: dict[str, str]) -> dict[str, Any]:
+def _auth_response(
+    user: dict[str, Any],
+) -> dict[str, Any]:
+
     token = _create_token(user["RE"])
-    try:
-        _register_active_session(user["RE"], token)
-    except HTTPException:
-        raise
+
+    _register_active_session(
+        user["RE"],
+        token,
+    )
+
     return {
         "token": token,
         "usuario": {
             **user,
-            "perfil": "administrador" if is_admin(user["RE"]) else "gestor" if is_manager(user["RE"]) else "usuario",
+            "perfil": (
+                "administrador"
+                if is_admin(user["RE"])
+                else "gestor"
+                if is_manager(user["RE"])
+                else "usuario"
+            ),
         },
     }
 
 
+# ============================================================
+# SAÚDE DA API
+# ============================================================
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "armazenamento": "firestore" if storage.use_firestore else "sqlite"}
+
+    return {
+        "status": "ok",
+        "armazenamento": (
+            "firestore"
+            if storage.use_firestore
+            else "sqlite"
+        ),
+    }
 
 
-@app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
-def register(data: RegistrationInput) -> dict[str, Any]:
+# ============================================================
+# CADASTRO
+# ============================================================
+
+@app.post(
+    "/api/auth/register",
+    status_code=status.HTTP_201_CREATED,
+)
+def register(
+    data: RegistrationInput,
+) -> dict[str, Any]:
+
     user = storage.get_user(data.RE)
+
     if user and not user["ativo"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Este usuário está bloqueado.")
-    registered_first_name = user["nome"].strip().split(maxsplit=1)[0] if user and user["nome"].strip() else ""
-    if user and registered_first_name.casefold() != data.nome.casefold():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Este usuário está bloqueado.",
+        )
+
+    registered_first_name = (
+        user["nome"].strip().split(maxsplit=1)[0]
+        if user and user["nome"].strip()
+        else ""
+    )
+
+    if (
+        user
+        and registered_first_name.casefold()
+        != data.nome.casefold()
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="O primeiro nome informado não corresponde ao cadastro deste RE.",
+            detail=(
+                "O primeiro nome informado não corresponde "
+                "ao cadastro deste RE."
+            ),
         )
+
     if is_admin(data.RE):
-        if not admin_password_hash or not _verify_password(data.senha, admin_password_hash):
+
+        if (
+            not admin_password_hash
+            or not _verify_password(
+                data.senha,
+                admin_password_hash,
+            )
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="A senha inicial do administrador não está configurada corretamente.",
+                detail=(
+                    "A senha inicial do administrador "
+                    "não está configurada corretamente."
+                ),
             )
+
     else:
+
         if storage.get_password_hash(data.RE) is not None:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Este RE já possui senha cadastrada.")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Este RE já possui senha cadastrada.",
+            )
+
     if user is None:
-        user = storage.create_user(data.RE, data.nome, data.departamento)
+
+        user = storage.create_user(
+            data.RE,
+            data.nome,
+            data.departamento,
+        )
+
     else:
-        user = storage.update_user(data.RE, user["nome"], data.departamento)
+
+        user = storage.update_user(
+            data.RE,
+            user["nome"],
+            data.departamento,
+        )
+
     storage.set_password_hash(
         data.RE,
-        admin_password_hash if is_admin(data.RE) else _hash_password(data.senha),
+        (
+            admin_password_hash
+            if is_admin(data.RE)
+            else _hash_password(data.senha)
+        ),
     )
 
     return _auth_response(user)
 
 
+# ============================================================
+# LOGIN — UMA SESSÃO POR USUÁRIO
+# ============================================================
+
 @app.post("/api/auth/login")
-def login(data: LoginInput) -> dict[str, Any]:
-    user = storage.get_user(data.RE)
+def login(
+    data: LoginInput,
+) -> dict[str, Any]:
+
+    employee_re = data.RE
+
+    user = storage.get_user(employee_re)
+
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="RE não cadastrado. Faça o cadastro com seu primeiro nome e RE.",
+            detail=(
+                "RE não cadastrado. Faça o cadastro "
+                "com seu primeiro nome e RE."
+            ),
         )
-    if not user["ativo"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Este usuário está bloqueado.")
-    password_hash = storage.get_password_hash(data.RE)
-    if is_admin(data.RE) and admin_password_hash:
-        if password_hash != admin_password_hash:
-            storage.set_password_hash(data.RE, admin_password_hash)
-        password_hash = admin_password_hash
-    if password_hash is None or not _verify_password(data.senha, password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="RE ou senha incorretos.")
 
-    token = _create_token(user["RE"])
-    _register_active_session(user["RE"], token)
+    if not user["ativo"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Este usuário está bloqueado.",
+        )
+
+    password_hash = storage.get_password_hash(employee_re)
+
+    if is_admin(employee_re) and admin_password_hash:
+
+        if password_hash != admin_password_hash:
+            storage.set_password_hash(
+                employee_re,
+                admin_password_hash,
+            )
+
+        password_hash = admin_password_hash
+
+    if (
+        password_hash is None
+        or not _verify_password(data.senha, password_hash)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="RE ou senha incorretos.",
+        )
+
+    with session_lock:
+        if _read_active_session_token(user["RE"]) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Você já possui uma seção aberta. "
+                    "Encerre a seção atual para poder acessar novamente."
+                ),
+            )
+
+        token = _create_token(user["RE"])
+
+        _register_active_session(
+            user["RE"],
+            token,
+        )
+
     return {
         "token": token,
         "usuario": {
             **user,
-            "perfil": "administrador" if is_admin(user["RE"]) else "gestor" if is_manager(user["RE"]) else "usuario",
+            "perfil": (
+                "administrador"
+                if is_admin(user["RE"])
+                else "gestor"
+                if is_manager(user["RE"])
+                else "usuario"
+            ),
         },
     }
 
 
+# ============================================================
+# LOGOUT — ENCERRA SOMENTE A SESSÃO ATUAL
+# ============================================================
+
 @app.post("/api/auth/logout")
-def logout(user: dict[str, str] = Depends(current_user)) -> dict[str, bool]:
-    _clear_active_session(user["RE"])
+def logout(
+    credentials: HTTPAuthorizationCredentials | None = Depends(
+        bearer_scheme
+    ),
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, bool]:
+
+    if credentials is None:
+        return {"ok": True}
+
+    token = credentials.credentials
+
+    # Remove somente o token deste dispositivo.
+    _clear_active_session(
+        user["RE"],
+        token,
+    )
+
     return {"ok": True}
 
 
+# ============================================================
+# USUÁRIO ATUAL
+# ============================================================
+
 @app.get("/api/auth/me")
-def get_current_user(user: dict[str, str] = Depends(current_user)) -> dict[str, str]:
+def get_current_user(
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+
     return user
 
 
+# ============================================================
+# ADMINISTRAÇÃO - GESTORES
+# ============================================================
+
 @app.get("/api/admin/gestores")
-def list_managers(user: dict[str, str] = Depends(admin_user)) -> list[dict[str, Any]]:
+def list_managers(
+    user: dict[str, Any] = Depends(admin_user),
+) -> list[dict[str, Any]]:
+
     configured_managers = {
         value.strip()
-        for value in os.getenv("DASHBOARD_MANAGER_RES", "").split(",")
+        for value in os.getenv(
+            "DASHBOARD_MANAGER_RES",
+            "",
+        ).split(",")
         if value.strip()
     }
-    all_manager_res = configured_managers | {user["RE"]} | storage.list_manager_res()
+
+    all_manager_res = (
+        configured_managers
+        | {user["RE"]}
+        | storage.list_manager_res()
+    )
+
     users_by_re = {
         str(manager.get("RE", "")).strip(): manager
         for manager in storage.list_users()
         if str(manager.get("RE", "")).strip()
     }
+
     managers = []
+
     for employee_re in sorted(all_manager_res):
-        manager = users_by_re.get(employee_re) or storage.get_user(employee_re)
+
+        manager = (
+            users_by_re.get(employee_re)
+            or storage.get_user(employee_re)
+        )
+
         if manager is not None:
             managers.append(manager)
+
     return managers
 
 
+# ============================================================
+# ADMINISTRAÇÃO - USUÁRIOS
+# ============================================================
+
 @app.get("/api/admin/usuarios")
-def list_users(user: dict[str, str] = Depends(admin_user)) -> list[dict[str, Any]]:
+def list_users(
+    user: dict[str, Any] = Depends(admin_user),
+) -> list[dict[str, Any]]:
+
     return storage.list_users()
 
 
@@ -577,39 +1119,86 @@ def list_users(user: dict[str, str] = Depends(admin_user)) -> list[dict[str, Any
 def update_user(
     employee_re: str,
     data: UserUpdateInput,
-    user: dict[str, str] = Depends(admin_user),
+    user: dict[str, Any] = Depends(admin_user),
 ) -> dict[str, Any]:
+
     if employee_re == admin_re:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="O cadastro do administrador principal não pode ser alterado.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "O cadastro do administrador principal "
+                "não pode ser alterado."
+            ),
+        )
+
     if re.fullmatch(r"[0-9]{1,5}", employee_re) is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="RE inválido.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="RE inválido.",
+        )
+
     existing_user = storage.get_user(employee_re)
+
     if existing_user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuário não encontrado.",
+        )
+
     if employee_re in manager_res():
-        ensure_manager_department_available(employee_re, data.departamento)
-    return storage.update_user(employee_re, data.nome, data.departamento)
+        ensure_manager_department_available(
+            employee_re,
+            data.departamento,
+        )
+
+    return storage.update_user(
+        employee_re,
+        data.nome,
+        data.departamento,
+    )
 
 
 @app.put("/api/admin/usuarios/{employee_re}/senha")
 def update_user_password(
     employee_re: str,
     data: PasswordUpdateInput,
-    user: dict[str, str] = Depends(admin_user),
+    user: dict[str, Any] = Depends(admin_user),
 ) -> dict[str, str]:
+
     if employee_re == admin_re:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A senha do administrador principal é definida por ADMIN_PASSWORD_HASH.",
+            detail=(
+                "A senha do administrador principal é definida "
+                "por ADMIN_PASSWORD_HASH."
+            ),
         )
+
     if re.fullmatch(r"[0-9]{1,5}", employee_re) is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="RE inválido.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="RE inválido.",
+        )
+
     target_user = storage.get_user(employee_re)
+
     if target_user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuário não encontrado.",
+        )
+
     if not target_user["ativo"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Este usuário está bloqueado.")
-    storage.set_password_hash(employee_re, _hash_password(data.senha))
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Este usuário está bloqueado.",
+        )
+
+    storage.set_password_hash(
+        employee_re,
+        _hash_password(data.senha),
+    )
+
     return {"status": "Senha atualizada."}
 
 
@@ -617,88 +1206,218 @@ def update_user_password(
 def set_user_status(
     employee_re: str,
     active: bool,
-    user: dict[str, str] = Depends(admin_user),
+    user: dict[str, Any] = Depends(admin_user),
 ) -> dict[str, Any]:
-    if employee_re == admin_re:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="O administrador principal não pode ser bloqueado.")
-    if re.fullmatch(r"[0-9]{1,5}", employee_re) is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="RE inválido.")
-    target_user = storage.get_user(employee_re)
-    if target_user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado.")
-    storage.set_user_active(employee_re, active)
-    return {**target_user, "ativo": active}
 
+    if employee_re == admin_re:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "O administrador principal "
+                "não pode ser bloqueado."
+            ),
+        )
+
+    if re.fullmatch(r"[0-9]{1,5}", employee_re) is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="RE inválido.",
+        )
+
+    target_user = storage.get_user(employee_re)
+
+    if target_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuário não encontrado.",
+        )
+
+    storage.set_user_active(
+        employee_re,
+        active,
+    )
+
+    return {
+        **target_user,
+        "ativo": active,
+    }
+
+
+# ============================================================
+# GESTORES - OPERADORES
+# ============================================================
 
 @app.get("/api/gestores/operadores")
-def list_operators(user: dict[str, str] = Depends(manager_user)) -> list[dict[str, Any]]:
+def list_operators(
+    user: dict[str, Any] = Depends(manager_user),
+) -> list[dict[str, Any]]:
+
     users = storage.list_users()
+
     if is_admin(user["RE"]):
+
         department_users = users
+
     else:
-        target_department = department_key(user.get("departamento"))
+
+        target_department = department_key(
+            user.get("departamento")
+        )
+
         department_users = [
-            operator for operator in users
-            if target_department
-            and department_key(operator.get("departamento")) == target_department
+            operator
+            for operator in users
+            if (
+                target_department
+                and department_key(
+                    operator.get("departamento")
+                ) == target_department
+            )
         ]
+
     manager_ids = manager_res() | {admin_re}
+
     return [
-        {**operator, "perfilGestor": operator["RE"] in manager_ids}
+        {
+            **operator,
+            "perfilGestor": operator["RE"] in manager_ids,
+        }
         for operator in department_users
     ]
 
 
 @app.put("/api/gestores/operadores/{employee_re}/bloquear")
 def block_operator(
-    employee_re: str, user: dict[str, str] = Depends(manager_user)
+    employee_re: str,
+    user: dict[str, Any] = Depends(manager_user),
 ) -> dict[str, Any]:
+
     if re.fullmatch(r"[0-9]{1,5}", employee_re) is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="RE inválido.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="RE inválido.",
+        )
+
     if is_manager(employee_re):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Gestores só podem bloquear operadores.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Gestores só podem bloquear operadores.",
+        )
+
     operator = storage.get_user(employee_re)
+
     if operator is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cadastro do operador não encontrado.")
-    if not is_admin(user["RE"]) and department_key(operator.get("departamento")) != department_key(user.get("departamento")):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cadastro do operador não encontrado.")
-    storage.set_user_active(employee_re, False)
-    return {**operator, "ativo": False}
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cadastro do operador não encontrado.",
+        )
+
+    if (
+        not is_admin(user["RE"])
+        and department_key(operator.get("departamento"))
+        != department_key(user.get("departamento"))
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cadastro do operador não encontrado.",
+        )
+
+    storage.set_user_active(
+        employee_re,
+        False,
+    )
+
+    return {
+        **operator,
+        "ativo": False,
+    }
 
 
-@app.post("/api/admin/gestores", status_code=status.HTTP_201_CREATED)
+# ============================================================
+# ADMINISTRAÇÃO - ADICIONAR GESTOR
+# ============================================================
+
+@app.post(
+    "/api/admin/gestores",
+    status_code=status.HTTP_201_CREATED,
+)
 def add_manager(
-    data: ManagerInput, user: dict[str, str] = Depends(admin_user)
+    data: ManagerInput,
+    user: dict[str, Any] = Depends(admin_user),
 ) -> dict[str, Any]:
+
     manager = storage.get_user(data.RE)
+
     if manager is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Não existe usuário cadastrado com esse RE.",
         )
+
     if is_manager(data.RE):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Este usuário já possui acesso de gestor.",
         )
-    ensure_manager_department_available(data.RE, manager.get("departamento", ""))
+
+    ensure_manager_department_available(
+        data.RE,
+        manager.get("departamento", ""),
+    )
+
     storage.add_manager(data.RE)
+
     return manager
 
 
+# ============================================================
+# DASHBOARD
+# ============================================================
+
 @app.get("/api/dashboard")
-def dashboard(user: dict[str, str] = Depends(manager_user)) -> dict[str, Any]:
+def dashboard(
+    user: dict[str, Any] = Depends(manager_user),
+) -> dict[str, Any]:
+
     users = storage.list_users()
-    productions = records_for_department(storage.list_records("producoes"), user, users)
-    remaining_records = records_for_department(
-        storage.list_records("pecas_restantes"), user, users
+
+    productions = records_for_department(
+        storage.list_records("producoes"),
+        user,
+        users,
     )
-    latest_pieces_by_operator: dict[str, dict[str, Any]] = {}
+
+    remaining_records = records_for_department(
+        storage.list_records("pecas_restantes"),
+        user,
+        users,
+    )
+
+    latest_pieces_by_operator: dict[
+        str,
+        dict[str, Any],
+    ] = {}
+
     for record in remaining_records:
-        employee_re = str(record.get("usuarioRe", "")).strip()
-        record_key = employee_re or str(record.get("id", ""))
-        current = latest_pieces_by_operator.get(record_key)
-        if current is None or str(record.get("data", "")) > str(current.get("data", "")):
+
+        employee_re = str(
+            record.get("usuarioRe", "")
+        ).strip()
+
+        record_key = (
+            employee_re
+            or str(record.get("id", ""))
+        )
+
+        current = latest_pieces_by_operator.get(
+            record_key
+        )
+
+        if (
+            current is None
+            or str(record.get("data", ""))
+            > str(current.get("data", ""))
+        ):
             latest_pieces_by_operator[record_key] = record
 
     return {
@@ -712,7 +1431,10 @@ def dashboard(user: dict[str, str] = Depends(manager_user)) -> dict[str, Any]:
             users,
         ),
         "resumo": {
-            "total_produzido": sum(int(record.get("quantidade") or 0) for record in productions),
+            "total_produzido": sum(
+                int(record.get("quantidade") or 0)
+                for record in productions
+            ),
             "pecas_pendentes": sum(
                 int(record.get(field) or 0)
                 for record in latest_pieces_by_operator.values()
@@ -722,24 +1444,47 @@ def dashboard(user: dict[str, str] = Depends(manager_user)) -> dict[str, Any]:
     }
 
 
+# ============================================================
+# PRODUÇÕES
+# ============================================================
+
 @app.get("/api/producoes")
-def list_productions(user: dict[str, str] = Depends(manager_user)) -> list[dict[str, Any]]:
+def list_productions(
+    user: dict[str, Any] = Depends(manager_user),
+) -> list[dict[str, Any]]:
+
     return records_for_department(
-        storage.list_records("producoes"), user, storage.list_users()
+        storage.list_records("producoes"),
+        user,
+        storage.list_users(),
     )
 
+
+# ============================================================
+# PEÇAS RESTANTES
+# ============================================================
 
 @app.get("/api/pecas-restantes")
-def list_remaining_pieces(user: dict[str, str] = Depends(manager_user)) -> list[dict[str, Any]]:
+def list_remaining_pieces(
+    user: dict[str, Any] = Depends(manager_user),
+) -> list[dict[str, Any]]:
+
     return records_for_department(
-        storage.list_records("pecas_restantes"), user, storage.list_users()
+        storage.list_records("pecas_restantes"),
+        user,
+        storage.list_users(),
     )
 
+
+# ============================================================
+# METAS DE PRODUÇÃO
+# ============================================================
 
 @app.get("/api/metas-producao")
 def list_production_goals(
-    user: dict[str, str] = Depends(manager_user),
+    user: dict[str, Any] = Depends(manager_user),
 ) -> list[dict[str, Any]]:
+
     return goals_for_department(
         storage.list_all_production_goals(),
         user,
@@ -750,14 +1495,21 @@ def list_production_goals(
 
 @app.post("/api/metas-producao")
 def save_production_goal(
-    data: ProductionGoalInput, user: dict[str, str] = Depends(manager_user)
+    data: ProductionGoalInput,
+    user: dict[str, Any] = Depends(manager_user),
 ) -> dict[str, Any]:
+
     department = goal_department_for_section(
         data.secao,
         user,
         storage.list_records("producoes"),
         storage.list_users(),
     )
+
     return storage.save_production_goal(
-        user["RE"], data.secao, data.quantidade, department
+        user["RE"],
+        data.secao,
+        data.quantidade,
+        department,
     )
+

@@ -33,8 +33,19 @@ function AuthScreen({ onAuthenticated }) {
 
   function formatAuthError(message) {
     const normalized = String(message || "").trim();
-    if (normalized.includes("já está logado em outra sessão")) {
-      return "Este usuário já está conectado em outra sessão. Feche a sessão ativa e tente novamente.";
+    if (
+      normalized.includes("Sessão inválida")
+      || normalized.includes("sessão inválida")
+      || normalized.includes("Faça login para continuar")
+    ) {
+      return "Sessão inválida ou expirada. Tente novamente.";
+    }
+    if (
+      normalized.includes("já possui uma seção aberta")
+      || normalized.includes("Encerre a seção atual")
+      || normalized.includes("seção aberta")
+    ) {
+      return "Você já possui uma seção aberta. Encerre a seção atual para poder acessar novamente.";
     }
     if (normalized.includes("RE ou senha incorretos")) {
       return "RE ou senha incorretos.";
@@ -53,6 +64,15 @@ function AuthScreen({ onAuthenticated }) {
       });
       onAuthenticated(result);
     } catch (requestError) {
+      const normalized = String(requestError?.message || "");
+      const hasStaleSessionError = normalized.includes("Sessão inválida")
+        || normalized.includes("sessão inválida")
+        || normalized.includes("Faça login para continuar")
+        || normalized.includes("Faça login para continuar.");
+      if (hasStaleSessionError) {
+        localStorage.removeItem("production-session");
+        setForm((current) => ({ ...current, senha: "" }));
+      }
       setError(formatAuthError(requestError.message));
     } finally {
       setLoading(false);
@@ -729,10 +749,36 @@ export default function App() {
     }
   });
 
+  function clearStoredSession() {
+    localStorage.removeItem("production-session");
+    setSession(null);
+  }
+
   function authenticate(result) {
     localStorage.setItem("production-session", JSON.stringify(result));
     setSession(result);
   }
+
+  useEffect(() => {
+    const currentSession = session;
+    if (!currentSession?.token) {
+      return;
+    }
+
+    let active = true;
+    apiRequest("/auth/me", {
+      token: currentSession.token,
+    }).catch(() => {
+      if (!active) {
+        return;
+      }
+      clearStoredSession();
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [session]);
 
   async function logout() {
     const currentSession = session;
@@ -746,8 +792,7 @@ export default function App() {
         // Ignora falha de logout no servidor e mantém a sessão local fechada.
       }
     }
-    localStorage.removeItem("production-session");
-    setSession(null);
+    clearStoredSession();
   }
 
   return session?.token && session?.usuario

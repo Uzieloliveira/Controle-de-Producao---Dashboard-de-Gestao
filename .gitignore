@@ -7,3 +7,4 @@ __pycache__/
 backend/controle_producao.db
 *-firebase-adminsdk-*.json
 *service-account*.json
+serviceAccountKey.json
