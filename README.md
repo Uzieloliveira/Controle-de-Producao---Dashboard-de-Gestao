@@ -100,7 +100,7 @@ ADMIN_RE=90829
 ADMIN_PASSWORD_HASH=COLE_AQUI_O_HASH_SCRYPT
 FIRESTORE_ENABLED=true
 GOOGLE_CLOUD_PROJECT=SEU_PROJECT_ID
-FRONTEND_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+FRONTEND_ORIGINS=http://localhost:5173
 # Opcional: caminho para chave de serviço fora do projeto, se não usar ADC.
 # GOOGLE_APPLICATION_CREDENTIALS=C:\caminho\seguro\service-account.json
 # Opcional: REs de gestores iniciais, separados por vírgula.
@@ -154,7 +154,7 @@ Terminal 1 — API:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
+python -m uvicorn backend.main:app --reload --port 8000
 ```
 
 Terminal 2 — frontend:
@@ -163,7 +163,7 @@ Terminal 2 — frontend:
 npm run dev
 ```
 
-Abra [http://localhost:5173](http://localhost:5173). O Vite encaminha as chamadas `/api` para `http://127.0.0.1:8000`; portanto, mantenha ambos os processos em execução. Para verificar o backend, acesse [http://127.0.0.1:8000/api/health](http://127.0.0.1:8000/api/health). A documentação interativa da API fica em [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+Abra [http://localhost:5173](http://localhost:5173). O Vite encaminha as chamadas da interface para a API local em execução no mesmo ambiente; mantenha ambos os processos em execução. Para verificar o backend, acesse [http://localhost:8000/api/health](http://localhost:8000/api/health). A documentação interativa da API fica em [http://localhost:8000/docs](http://localhost:8000/docs).
 
 ## 🌐 Configuração fora do desenvolvimento local
 
