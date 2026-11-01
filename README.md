@@ -174,7 +174,48 @@ $env:VITE_API_URL = "https://api.exemplo.com/api"
 npm run build
 ```
 
-Configure `FRONTEND_ORIGINS` no backend com a origem exata do site, como `https://painel.exemplo.com`. Em produção:
+Para o ambiente de produção, o melhor fluxo é:
+
+- Frontend: hospedado na Vercel
+- Backend: hospedado em um serviço ASGI como Render, Railway ou Google Cloud Run
+- Variável do frontend: `VITE_API_URL` apontando para a URL pública da API
+- Variável do backend: `FRONTEND_ORIGINS` com a URL exata do frontend hospedado
+
+### 🚀 Deploy do frontend na Vercel
+
+1. Conecte o repositório na Vercel.
+2. Selecione o framework **Vite**.
+3. Use a pasta raiz do projeto.
+4. Defina a variável de ambiente:
+
+```bash
+VITE_API_URL=https://api.exemplo.com/api
+```
+
+5. Faça o deploy. O build usa `npm run build` e publica a pasta `dist`.
+
+### 🧩 Deploy do backend em serviço externo
+
+A API FastAPI deve ser publicada em um ambiente com Python e acesso ao banco escolhido. O comando de inicialização costuma ser algo como:
+
+```bash
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 10000
+```
+
+Configure no serviço as variáveis de ambiente do backend, por exemplo:
+
+```dotenv
+APP_ENV=production
+APP_SECRET_KEY=SUBSTITUA_POR_UMA_CHAVE_ALEATORIA_LONGA
+ADMIN_RE=90829
+ADMIN_PASSWORD_HASH=COLE_AQUI_O_HASH_SCRYPT
+FIRESTORE_ENABLED=false
+FRONTEND_ORIGINS=https://seu-projeto.vercel.app
+```
+
+Se o backend estiver em outra origem, adicione também esse endereço ao `FRONTEND_ORIGINS` em lista separada por vírgulas.
+
+Em produção:
 
 - Defina `APP_ENV=production` e configure uma `APP_SECRET_KEY` forte e exclusiva. O backend recusa iniciar em produção se a chave padrão de desenvolvimento estiver em uso.
 - Armazene `.env`, hashes e credenciais em um gerenciador de segredos ou configuração protegida da plataforma; não os inclua no bundle do frontend.

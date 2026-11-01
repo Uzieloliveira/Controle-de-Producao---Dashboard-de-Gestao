@@ -92,6 +92,15 @@ class FirestoreStorageTests(unittest.TestCase):
         self.assertFalse(storage.use_firestore)
         self.assertIsNone(storage.firestore)
 
+    @patch.dict(
+        os.environ,
+        {"FIRESTORE_ENABLED": "true", "APP_ENV": "production", "GOOGLE_APPLICATION_CREDENTIALS": "/tmp/nao-existe.json"},
+        clear=False,
+    )
+    def test_missing_firestore_credentials_fail_fast_in_production(self) -> None:
+        with self.assertRaises(RuntimeError):
+            Storage()
+
 
 if __name__ == "__main__":
     unittest.main()

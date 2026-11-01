@@ -99,6 +99,22 @@ class ManagerRouteTests(unittest.TestCase):
             [records[0], records[2]],
         )
 
+    def test_manager_records_resolve_department_by_user_re_with_normalized_values(self) -> None:
+        records = [
+            {"usuarioRe": "000123", "quantidade": 10},
+            {"usuarioRe": "456", "quantidade": 20},
+        ]
+        users = [
+            {"RE": "123", "departamento": "Montagem"},
+            {"RE": "456", "departamento": "Pintura"},
+        ]
+        manager = {"RE": "123", "departamento": "Montagem"}
+
+        self.assertEqual(
+            [record["quantidade"] for record in main.records_for_department(records, manager, users)],
+            [10],
+        )
+
     def test_manager_results_endpoints_hide_other_departments(self) -> None:
         main.app.dependency_overrides[main.manager_user] = lambda: {
             "RE": "22081",
@@ -201,6 +217,21 @@ class ManagerRouteTests(unittest.TestCase):
             )),
             2,
         )
+
+    def test_manager_remaining_pieces_are_filtered_by_department(self) -> None:
+        records = [
+            {"usuarioRe": "22081", "data": "2026-01-10", "acabamento": 5},
+            {"usuarioRe": "22082", "data": "2026-01-11", "acabamento": 7},
+            {"usuarioRe": "22081", "data": "2026-01-12", "acabamento": 2},
+        ]
+        users = ManagerStorage.list_users()
+        manager = {"RE": "22081", "departamento": "montagem"}
+
+        filtered = main.records_for_department(records, manager, users)
+
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual([record["usuarioRe"] for record in filtered], ["22081", "22081"])
+        self.assertTrue(all(main.department_key(record.get("departamento") or users[0]["departamento"]) == "montagem" for record in filtered))
 
     def test_goal_department_comes_from_production_section_department(self) -> None:
         production_rows = [

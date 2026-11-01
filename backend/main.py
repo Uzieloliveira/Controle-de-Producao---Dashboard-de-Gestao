@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
 
-from backend.storage import Storage
+from backend.storage import Storage, normalize_employee_re
 
 
 app = FastAPI(title="API Controle de Produção", version="1.0.0")
@@ -186,6 +186,42 @@ def manager_res() -> set[str]:
     return configured_manager_res() | storage.list_manager_res()
 
 
+def normalize_re_value(value: Any) -> str:
+    return normalize_employee_re(value)
+
+
+def build_users_by_re(users: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    users_by_re: dict[str, dict[str, Any]] = {}
+    for item in users:
+        for key in ("RE", "re", "usuarioRe", "usuario_re"):
+            employee_re = normalize_re_value(item.get(key))
+            if employee_re:
+                users_by_re[employee_re] = item
+    return users_by_re
+
+
+def resolve_record_department(
+    record: dict[str, Any],
+    users_by_re: dict[str, dict[str, Any]],
+) -> str:
+
+    for key in ("departamento", "department"):
+        value = record.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+
+    for key in ("usuarioRe", "usuario_re", "usuario", "operadorRe", "operador", "re", "RE"):
+        employee_re = normalize_re_value(record.get(key))
+        if employee_re:
+            user = users_by_re.get(employee_re)
+            if user:
+                department = user.get("departamento")
+                if department not in (None, ""):
+                    return str(department).strip()
+
+    return ""
+
+
 # ============================================================
 # FILTROS POR DEPARTAMENTO
 # ============================================================
@@ -206,22 +242,13 @@ def records_for_department(
     if not target_department:
         return []
 
-    users_by_re = {
-        str(item.get("RE", "")).strip(): item
-        for item in users
-        if str(item.get("RE", "")).strip()
-    }
+    users_by_re = build_users_by_re(users)
 
     return [
         record
         for record in records
         if department_key(
-            record.get("departamento")
-            or record.get("department")
-            or users_by_re.get(
-                str(record.get("usuarioRe", "")).strip(),
-                {},
-            ).get("departamento")
+            resolve_record_department(record, users_by_re)
         ) == target_department
     ]
 
@@ -243,11 +270,7 @@ def goals_for_department(
     if not target_department:
         return []
 
-    users_by_re = {
-        str(item.get("RE", "")).strip(): item
-        for item in users
-        if str(item.get("RE", "")).strip()
-    }
+    users_by_re = build_users_by_re(users)
 
     departments_by_section: dict[str, set[str]] = {}
 
@@ -255,11 +278,7 @@ def goals_for_department(
         section_id = department_key(record.get("secao"))
 
         department_id = department_key(
-            record.get("departamento")
-            or users_by_re.get(
-                str(record.get("usuarioRe", "")).strip(),
-                {},
-            ).get("departamento")
+            resolve_record_department(record, users_by_re)
         )
 
         if section_id and department_id:
@@ -285,11 +304,7 @@ def goal_department_for_section(
     users: list[dict[str, Any]],
 ) -> str:
 
-    users_by_re = {
-        str(item.get("RE", "")).strip(): item
-        for item in users
-        if str(item.get("RE", "")).strip()
-    }
+    users_by_re = build_users_by_re(users)
 
     section_id = department_key(section)
 
@@ -299,10 +314,7 @@ def goal_department_for_section(
         if department_key(record.get("secao")) == section_id
         for department in [
             record.get("departamento")
-            or users_by_re.get(
-                str(record.get("usuarioRe", "")).strip(),
-                {},
-            ).get("departamento")
+            or resolve_record_department(record, users_by_re)
         ]
         if department_key(department)
     }

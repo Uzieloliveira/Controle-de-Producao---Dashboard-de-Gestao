@@ -21,7 +21,7 @@ def normalize_employee_re(value: Any) -> str:
         return ""
     digits = "".join(ch for ch in text if ch.isdigit())
     if digits:
-        return digits
+        return digits.lstrip("0") or "0"
     return text
 
 
@@ -36,17 +36,59 @@ class Storage:
         if not self.use_firestore:
             self._initialize_sqlite()
 
+    @staticmethod
+    def _firestore_candidates(collection_name: str) -> list[str]:
+        aliases = {
+            "usuarios": ["usuarios", "usuarios_producao", "users"],
+            "gestores": ["gestores", "gestores_producao", "managers"],
+            "contas": ["contas", "contas_producao", "accounts"],
+            "active_sessions": ["active_sessions", "sessoes_ativas", "sessions"],
+            "metas_producao": ["metas_producao", "metas", "production_goals"],
+            "producoes": ["producoes", "producoes_producao", "production"],
+            "pecas_restantes": ["pecas_restantes", "pecas_restantes_producao", "remaining_pieces"],
+        }
+        preferred = [collection_name]
+        return list(dict.fromkeys(preferred + aliases.get(collection_name, [])))
+
+    def _firestore_collection(self, collection_name: str) -> Any:
+        if not self.firestore:
+            raise RuntimeError("Firestore não inicializado.")
+        candidates = self._firestore_candidates(collection_name)
+        for name in candidates:
+            try:
+                return self.firestore.collection(name)
+            except Exception:
+                continue
+        return self.firestore.collection(candidates[0])
+
     def _create_firestore_client(self) -> Any | None:
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+        credential_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        app_env = os.getenv("APP_ENV", "development").lower()
+
+        if credential_path and not os.path.exists(credential_path):
+            if app_env == "production":
+                raise RuntimeError(
+                    "Arquivo de credenciais do Firebase não encontrado. "
+                    f"Verifique GOOGLE_APPLICATION_CREDENTIALS ({credential_path})."
+                )
+            return None
+
+        if not project_id and not credential_path and app_env == "production":
+            raise RuntimeError(
+                "FIRESTORE_ENABLED=true exige GOOGLE_CLOUD_PROJECT e/ou "
+                "GOOGLE_APPLICATION_CREDENTIALS configurados em produção."
+            )
+
         try:
             from google.cloud import firestore
 
-            project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
             emulator_host = os.getenv("FIRESTORE_EMULATOR_HOST")
             if emulator_host:
                 return firestore.Client(project=project_id or "local-dev-project")
             return firestore.Client(project=project_id) if project_id else firestore.Client()
         except Exception:
-            if os.getenv("APP_ENV", "development").lower() == "production":
+            if app_env == "production":
                 raise RuntimeError(
                     "Não foi possível conectar ao Firestore. Verifique GOOGLE_CLOUD_PROJECT, "
                     "GOOGLE_APPLICATION_CREDENTIALS ou o ambiente do projeto."
@@ -181,21 +223,33 @@ class Storage:
         if not normalized_employee_re:
             return None
 
-        collection = self.firestore.collection(collection_name)
-        document = collection.document(normalized_employee_re).get()
-        if document.exists:
-            return document
+        for candidate in self._firestore_candidates(collection_name):
+            try:
+                collection = self.firestore.collection(candidate)
+            except Exception:
+                continue
 
-        for snapshot in collection.stream():
-            data = snapshot.to_dict() or {}
-            values = {
-                normalize_employee_re(snapshot.id),
-                normalize_employee_re(data.get("RE", "")),
-                normalize_employee_re(data.get("re", "")),
-                normalize_employee_re(data.get("usuarioRe", "")),
-            }
-            if normalized_employee_re in values:
-                return snapshot
+            try:
+                document = collection.document(normalized_employee_re).get()
+                if document.exists:
+                    return document
+            except Exception:
+                pass
+
+            try:
+                for snapshot in collection.stream():
+                    data = snapshot.to_dict() or {}
+                    values = {
+                        normalize_employee_re(snapshot.id),
+                        normalize_employee_re(data.get("RE", "")),
+                        normalize_employee_re(data.get("re", "")),
+                        normalize_employee_re(data.get("usuarioRe", "")),
+                        normalize_employee_re(data.get("usuario_re", "")),
+                    }
+                    if normalized_employee_re in values:
+                        return snapshot
+            except Exception:
+                continue
         return None
 
     def get_user(self, employee_re: str) -> dict[str, Any] | None:
@@ -225,7 +279,8 @@ class Storage:
         employee_re = normalize_employee_re(employee_re)
         user = {"RE": employee_re, "nome": name, "departamento": department, "ativo": True}
         if self.use_firestore:
-            self.firestore.collection("usuarios").document(employee_re).set(user)
+            target_collection = self._firestore_collection("usuarios")
+            target_collection.document(employee_re).set(user)
         else:
             with self._connection() as connection:
                 connection.execute(
@@ -236,11 +291,21 @@ class Storage:
 
     def list_users(self) -> list[dict[str, Any]]:
         if self.use_firestore:
-            users = []
-            for snapshot in self.firestore.collection("usuarios").stream():
-                record = self._user_record(snapshot.to_dict())
-                if record is not None:
+            users: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for candidate in self._firestore_candidates("usuarios"):
+                try:
+                    snapshots = self.firestore.collection(candidate).stream()
+                except Exception:
+                    continue
+                for snapshot in snapshots:
+                    record = self._user_record(snapshot.to_dict())
+                    if record is None:
+                        continue
                     record["RE"] = normalize_employee_re(record["RE"] or snapshot.id)
+                    if record["RE"] in seen:
+                        continue
+                    seen.add(record["RE"])
                     users.append(record)
             return sorted(users, key=lambda item: item["RE"])
         with self._connection() as connection:
@@ -260,7 +325,8 @@ class Storage:
     def update_user(self, employee_re: str, name: str, department: str) -> dict[str, Any]:
         employee_re = normalize_employee_re(employee_re)
         if self.use_firestore:
-            reference = self.firestore.collection("usuarios").document(employee_re)
+            target_collection = self._firestore_collection("usuarios")
+            reference = target_collection.document(employee_re)
             reference.update({"nome": name, "departamento": department})
         else:
             with self._connection() as connection:
@@ -276,9 +342,7 @@ class Storage:
     def set_user_active(self, employee_re: str, active: bool) -> None:
         employee_re = normalize_employee_re(employee_re)
         if self.use_firestore:
-            self.firestore.collection("usuarios").document(employee_re).update(
-                {"ativo": active}
-            )
+            self._firestore_collection("usuarios").document(employee_re).update({"ativo": active})
         else:
             with self._connection() as connection:
                 connection.execute(
@@ -420,11 +484,16 @@ class Storage:
     def list_manager_res(self) -> set[str]:
         if self.use_firestore:
             manager_res = set()
-            for snapshot in self.firestore.collection("gestores").stream():
-                document = snapshot.to_dict() or {}
-                employee_re = normalize_employee_re(document.get("usuarioRe") or snapshot.id)
-                if employee_re:
-                    manager_res.add(employee_re)
+            for candidate in self._firestore_candidates("gestores"):
+                try:
+                    snapshots = self.firestore.collection(candidate).stream()
+                except Exception:
+                    continue
+                for snapshot in snapshots:
+                    document = snapshot.to_dict() or {}
+                    employee_re = normalize_employee_re(document.get("usuarioRe") or document.get("re") or snapshot.id)
+                    if employee_re:
+                        manager_res.add(employee_re)
             return manager_res
         with self._connection() as connection:
             rows = connection.execute("SELECT re FROM gestores ORDER BY re").fetchall()
@@ -441,9 +510,7 @@ class Storage:
     def add_manager(self, employee_re: str) -> None:
         employee_re = normalize_employee_re(employee_re)
         if self.use_firestore:
-            self.firestore.collection("gestores").document(employee_re).set(
-                {"usuarioRe": employee_re}
-            )
+            self._firestore_collection("gestores").document(employee_re).set({"usuarioRe": employee_re})
             return
         with self._connection() as connection:
             connection.execute(
