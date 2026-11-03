@@ -126,6 +126,9 @@ textarea.form-control { resize: vertical; }
 .comparison-toolbar { display: flex; align-items: flex-end; gap: 12px; padding: 14px 18px; border-top: 1px solid #edf1ee; background: #fbfcfb; }
 .comparison-period { display: flex; width: min(180px, 34%); flex-direction: column; gap: 5px; color: #647168; font-size: 9px; font-weight: 600; }
 .comparison-period .form-control, .comparison-period .form-select { min-height: 34px; border-color: #e1e8e2; font-size: 10px; }
+.comparison-multiplier { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 5px; padding: 0 10px 0 0; color: #647168; font-size: 9px; font-weight: 600; }
+.comparison-multiplier strong { color: #34443a; font-size: 11px; font-weight: 700; }
+.comparison-label { color: #647168; font-size: 9px; font-weight: 600; }
 .comparison-period-label { margin: 0 0 9px auto; color: #87938b; font-size: 10px; text-transform: capitalize; }
 .charts-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 0 14px 16px; }
 .chart-card { min-width: 0; }

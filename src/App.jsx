@@ -434,6 +434,23 @@ function Dashboard({ token, user, onLogout }) {
     (total, item) => total + item.quantidade,
     0,
   );
+  const selectedPeriodRecords = useMemo(
+    () => filterRecordsByPeriod(
+      dashboard?.producoes || [],
+      comparisonMode,
+      comparisonDate,
+    ),
+    [comparisonDate, comparisonMode, dashboard],
+  );
+  const multiplierNames = useMemo(() => {
+    const uniqueNames = [...new Set(
+      selectedPeriodRecords
+        .map((record) => String(record.multiplicador || record.operador || "").trim())
+        .filter(Boolean),
+    )];
+
+    return uniqueNames.length > 0 ? uniqueNames : ["Não informado"];
+  }, [selectedPeriodRecords]);
   const periodLabel = comparisonMode === "day"
     ? new Date(`${comparisonDate}T00:00:00`).toLocaleDateString("pt-BR")
     : new Date(`${comparisonDate}-01T00:00:00`).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
@@ -544,6 +561,10 @@ function Dashboard({ token, user, onLogout }) {
             <div className="comparison-period">
               <label htmlFor="comparison-date">{comparisonMode === "day" ? "Data" : "Mês"}</label>
               <input id="comparison-date" className="form-control form-control-sm" type={comparisonMode === "day" ? "date" : "month"} value={comparisonMode === "day" ? comparisonDate : comparisonDate.slice(0, 7)} onChange={(event) => setComparisonDate(event.target.value)} />
+            </div>
+            <div className="comparison-multiplier">
+              <span className="comparison-label">nome do multiplicador</span>
+              <strong>{multiplierNames.join(", ")}</strong>
             </div>
             <span className="comparison-period-label">{periodLabel}</span>
           </div>}

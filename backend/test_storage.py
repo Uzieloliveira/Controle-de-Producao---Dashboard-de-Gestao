@@ -49,13 +49,19 @@ class FakeFirestore:
     def __init__(self) -> None:
         users = [Snapshot("12345", {"nome": "Operador"})]
         managers = [Snapshot("manager-document", {"usuarioRe": "12345"})]
+        production_users = [Snapshot("98765", {"RE": "98765", "nome": "Multiplicador de produção"})]
+        productions = [Snapshot("prod-1", {"usuarioRe": "98765", "operador": "", "quantidade": 42, "data": "2026-11-03"})]
         self.documents = {
             "usuarios": {snapshot.id: snapshot for snapshot in users},
             "gestores": {snapshot.id: snapshot for snapshot in managers},
+            "usuarios_producao": {snapshot.id: snapshot for snapshot in production_users},
+            "producoes": {snapshot.id: snapshot for snapshot in productions},
         }
         self.collections = {
             "usuarios": users,
             "gestores": managers,
+            "usuarios_producao": production_users,
+            "producoes": productions,
         }
 
     def collection(self, name: str) -> Collection:
@@ -84,6 +90,34 @@ class FirestoreStorageTests(unittest.TestCase):
 
         self.assertEqual(self.storage.get_user("123")["RE"], "123")
         self.assertEqual(self.storage.get_user("000123")["RE"], "123")
+
+    def test_list_users_ignores_production_user_collection(self) -> None:
+        self.assertNotIn("usuarios_producao", Storage._firestore_candidates("usuarios"))
+
+        production_snapshot = Snapshot("99999", {"RE": "99999", "nome": "Produção", "departamento": "Operação", "ativo": True})
+        self.storage.firestore.collections["usuarios_producao"] = [production_snapshot]
+        self.storage.firestore.documents["usuarios_producao"] = {"99999": production_snapshot}
+
+        users = self.storage.list_users()
+        self.assertEqual([user["RE"] for user in users], ["12345"])
+
+    def test_production_records_keep_operator_name_from_production_table(self) -> None:
+        production_snapshot = Snapshot("prod-2", {"usuarioRe": "98765", "operador": "novoteste", "quantidade": 7, "data": "2026-11-03"})
+        self.storage.firestore.collections["producoes"] = [production_snapshot]
+        self.storage.firestore.documents["producoes"] = {"prod-2": production_snapshot}
+
+        records = self.storage.list_records("producoes")
+        self.assertEqual(records[0]["operador"], "novoteste")
+        self.assertEqual(records[0]["multiplicador"], "Multiplicador de produção")
+
+    def test_production_records_do_not_derive_operator_name_from_users_producao(self) -> None:
+        production_snapshot = Snapshot("prod-3", {"usuarioRe": "000999", "operador": "novoteste", "quantidade": 8, "data": "2026-11-03"})
+        self.storage.firestore.collections["producoes"] = [production_snapshot]
+        self.storage.firestore.documents["producoes"] = {"prod-3": production_snapshot}
+
+        records = self.storage.list_records("producoes")
+        self.assertEqual(records[0]["operador"], "novoteste")
+        self.assertEqual(records[0]["multiplicador"], "")
 
     @patch.dict(os.environ, {"FIRESTORE_ENABLED": "true", "APP_ENV": "development"}, clear=False)
     @patch("google.cloud.firestore.Client", side_effect=RuntimeError("ADC missing"))

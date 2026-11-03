@@ -39,7 +39,7 @@ class Storage:
     @staticmethod
     def _firestore_candidates(collection_name: str) -> list[str]:
         aliases = {
-            "usuarios": ["usuarios", "usuarios_producao", "users"],
+            "usuarios": ["usuarios", "users"],
             "gestores": ["gestores", "gestores_producao", "managers"],
             "contas": ["contas", "contas_producao", "accounts"],
             "active_sessions": ["active_sessions", "sessoes_ativas", "sessions"],
@@ -518,13 +518,55 @@ class Storage:
                 (employee_re,),
             )
 
+    def get_production_multiplier_name(self, employee_re: str) -> str:
+        employee_re = normalize_employee_re(employee_re)
+        if not employee_re:
+            return ""
+
+        if self.use_firestore:
+            try:
+                collection = self.firestore.collection("usuarios_producao")
+            except Exception:
+                return ""
+
+            for snapshot in collection.stream():
+                data = snapshot.to_dict() or {}
+                values = {
+                    normalize_employee_re(snapshot.id),
+                    normalize_employee_re(data.get("RE", "")),
+                    normalize_employee_re(data.get("re", "")),
+                    normalize_employee_re(data.get("usuarioRe", "")),
+                    normalize_employee_re(data.get("usuario_re", "")),
+                }
+                if employee_re in values:
+                    name = str(data.get("nome") or data.get("name") or "").strip()
+                    if name:
+                        return name
+            return ""
+
+        try:
+            with self._connection() as connection:
+                row = connection.execute(
+                    "SELECT name FROM usuarios_producao WHERE re = ? LIMIT 1",
+                    (employee_re,),
+                ).fetchone()
+            if row is None:
+                return ""
+            return str(row["name"] or "").strip()
+        except sqlite3.Error:
+            return ""
+
     def list_records(self, collection: str) -> list[dict[str, Any]]:
         if self.use_firestore:
             snapshots = self.firestore.collection(collection).stream()
             records = []
             for snapshot in snapshots:
-                record = snapshot.to_dict()
+                record = snapshot.to_dict() or {}
                 record["id"] = snapshot.id
+                if collection == "producoes":
+                    record["operador"] = str(record.get("operador") or "").strip()
+                    employee_re = str(record.get("usuarioRe") or record.get("re") or snapshot.id or "").strip()
+                    record["multiplicador"] = self.get_production_multiplier_name(employee_re)
                 records.append(record)
             return sorted(records, key=lambda item: item.get("data", ""), reverse=True)
         with self._connection() as connection:
@@ -535,6 +577,8 @@ class Storage:
         for record in records:
             if collection == "producoes":
                 record["enviado"] = bool(record["enviado"])
+                employee_re = str(record.get("usuarioRe") or record.get("re") or "").strip()
+                record["multiplicador"] = self.get_production_multiplier_name(employee_re)
         return records
 
     @staticmethod
